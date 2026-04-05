@@ -150,8 +150,7 @@
         <img src="/mascot-nav.png" alt="Contexto" class="size-4 rounded-full" />
         <span>Contexto AI Tutor</span>
       </div>
-      <a href="https://vatsapatel.com/" target="_blank" rel="noopener noreferrer"
-         class="hover:text-gray-600 dark:hover:text-gray-300 transition">&lt;/&gt; Built by Vatsa Patel</a>
+      <span>&lt;/&gt; Built by <a href="https://vatsapatel.com/" target="_blank" rel="noopener noreferrer" class="underline hover:text-gray-600 dark:hover:text-gray-300 transition">Vatsa Patel</a></span>
     </div>
   </footer>
 </div>

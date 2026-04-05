@@ -12,7 +12,7 @@ Students (Browser)
    [Nginx :80]  ── reverse proxy
        |
   ┌────┴────────────────────────────────┐
-  │         frontend (SvelteKit)        │
+  │         frontend (SvelteKit)         │
   │  Port 5173 (dev) / static build     │
   │  - Chat interface                   │
   │  - Admin panel                      │
@@ -224,7 +224,3 @@ VITE_API_BASE_URL=http://localhost:8000
 | DELETE | `/api/admin/users/:id/role` | Super Admin | Remove role |
 | POST | `/api/admin/users/:id/ban` | Admin | Ban user |
 | POST | `/api/admin/users/:id/unban` | Admin | Unban user |
-
-## License
-
-Proprietary - PA-STEM-PA Project
