@@ -12,7 +12,7 @@ Students (Browser)
    [Nginx :80]  ── reverse proxy
        |
   ┌────┴────────────────────────────────┐
-  │         chat-ui (SvelteKit)         │
+  │         frontend (SvelteKit)        │
   │  Port 5173 (dev) / static build     │
   │  - Chat interface                   │
   │  - Admin panel                      │
@@ -68,7 +68,7 @@ Students (Browser)
 │   ├── services/             # Escalation, analytics, auth
 │   └── tutor_persona.md      # System prompt (Contexto persona)
 │
-├── chat-ui/                  # SvelteKit frontend
+├── frontend/                  # SvelteKit frontend
 │   ├── src/
 │   │   ├── routes/
 │   │   │   ├── +page.svelte          # New chat
@@ -130,7 +130,7 @@ backend/.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 ### 3. Start the frontend
 ```bash
-cd chat-ui
+cd frontend
 npm install
 npm run dev
 ```
@@ -197,7 +197,7 @@ EMBEDDING_MODEL=text-embedding-ada-002
 CORS_ALLOW_ORIGINS=http://localhost:5173,http://localhost
 ```
 
-### Frontend (`chat-ui/.env`)
+### Frontend (`frontend/.env`)
 ```
 VITE_API_BASE_URL=http://localhost:8000
 ```
