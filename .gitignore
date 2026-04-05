@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════════════════════════════
+# Contexto AI Tutor — .gitignore
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Environment & Secrets ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+credentials.json
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.pytype/
+
+# ── Node.js / Frontend ───────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.vite/
+.pnp.*
+.yarn/
+
+# ── IDE & Editors ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Claude Code ──────────────────────────────────────────────────
+.claude/
+
+# ── Docker ───────────────────────────────────────────────────────
+# Ignore Docker volumes data (created by docker-compose)
+docker/volumes/
+*.log
+
+# ── OS ───────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Misc ─────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+*.diff
+*.patch

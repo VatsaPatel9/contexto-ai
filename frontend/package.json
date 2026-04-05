@@ -1,0 +1,38 @@
+{
+  "name": "contexto-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.2",
+    "@sveltejs/kit": "^2.5.27",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@tailwindcss/typography": "^0.5.13",
+    "@types/uuid": "^10.0.0",
+    "postcss": "^8.4.31",
+    "svelte": "^5.53.10",
+    "svelte-check": "^4.0.0",
+    "tailwindcss": "^4.0.0",
+    "tslib": "^2.4.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.10",
+    "dompurify": "^3.2.6",
+    "eventsource-parser": "^1.1.2",
+    "highlight.js": "^11.9.0",
+    "katex": "^0.16.22",
+    "marked": "^9.1.0",
+    "supertokens-web-js": "^0.13.1",
+    "svelte-sonner": "^0.3.19",
+    "uuid": "^9.0.1"
+  }
+}

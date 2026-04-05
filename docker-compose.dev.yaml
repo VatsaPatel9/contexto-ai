@@ -1,0 +1,144 @@
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 with pgvector
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tutor-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tutor_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tutor_dev_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-tutor_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-supertokens-db.sh:/docker-entrypoint-initdb.d/init-supertokens-db.sh:ro
+    networks:
+      - tutor-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tutor_dev} -d ${POSTGRES_DB:-tutor_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Redis 7
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: tutor-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - tutor-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # SuperTokens Core (auth service on port 3567)
+  # ---------------------------------------------------------------------------
+  supertokens:
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:latest
+    container_name: tutor-supertokens
+    ports:
+      - "3567:3567"
+    environment:
+      POSTGRESQL_CONNECTION_URI: "postgresql://${POSTGRES_USER:-tutor_dev}:${POSTGRES_PASSWORD:-tutor_dev_pass}@postgres:5432/supertokens"
+    networks:
+      - tutor-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: >
+        bash -c 'exec 3<>/dev/tcp/127.0.0.1/3567 && echo -e "GET /hello HTTP/1.1\r\nhost: 127.0.0.1:3567\r\nConnection: close\r\n\r\n" >&3 && cat <&3 | grep "Hello"'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AI Tutor Backend (FastAPI on port 8000)
+  # ---------------------------------------------------------------------------
+  tutor-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tutor-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tutor_dev}:${POSTGRES_PASSWORD:-tutor_dev_pass}@postgres:5432/${POSTGRES_DB:-tutor_dev}
+      SUPERTOKENS_CONNECTION_URI: http://supertokens:3567
+      SUPERTOKENS_API_KEY: ${SUPERTOKENS_API_KEY:-}
+      AUTH_API_DOMAIN: ${AUTH_API_DOMAIN:-http://localhost}
+      AUTH_WEBSITE_DOMAIN: ${AUTH_WEBSITE_DOMAIN:-http://localhost}
+    env_file:
+      - .env.dev
+      - ./backend/.env
+    volumes:
+      - ./backend:/app/backend
+      - ./content_packs:/app/content_packs:ro
+    networks:
+      - tutor-network
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      supertokens:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Nginx reverse proxy (port 80)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: tutor-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - tutor-network
+    restart: unless-stopped
+    depends_on:
+      tutor-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  tutor-network:
+    driver: bridge
+    name: tutor-network
+
+volumes:
+  postgres_data:
+    name: tutor-postgres-data
+  redis_data:
+    name: tutor-redis-data
