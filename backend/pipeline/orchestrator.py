@@ -84,6 +84,46 @@ _ATTEMPT_FIRST_MSG = (
 )
 
 
+def _list_available_docs(db: Session, dataset_id) -> list[dict]:
+    """One representative line per active doc in a dataset.
+
+    Used to populate "here's what I can help with" responses — both on
+    refusals (so the user knows how to retry) and on explicit meta
+    questions like "what topics can you help with?".
+    """
+    from backend.models.dataset import Document, DocumentSegment
+
+    docs = (
+        db.query(Document)
+        .filter(
+            Document.dataset_id == dataset_id,
+            Document.deleted_at.is_(None),
+            Document.status == "ready",
+        )
+        .order_by(Document.created_at.desc())
+        .limit(30)
+        .all()
+    )
+
+    out: list[dict] = []
+    for d in docs:
+        first_seg = (
+            db.query(DocumentSegment.content)
+            .filter(DocumentSegment.document_id == d.id)
+            .order_by(DocumentSegment.position)
+            .first()
+        )
+        preview = ""
+        if first_seg and first_seg.content:
+            # Collapse whitespace, trim, take ~140 chars.
+            text = " ".join(first_seg.content.split())
+            preview = text[:140].rstrip()
+            if len(text) > 140:
+                preview += "…"
+        out.append({"title": d.title, "preview": preview})
+    return out
+
+
 def _persist_early_exit(
     db: Session,
     *,
@@ -396,13 +436,25 @@ async def process_chat_message(
 
     if msg_type != "meta" and not source_chunks:
         if has_content:
-            no_context_msg = (
-                "I don't have information about that in the uploaded course materials. "
-                "Try rephrasing your question or asking about a different topic "
-                "covered in the materials.\n\n"
-                "Ask your instructor if you think this topic should be added.\n\n"
-                "What topic can I help you with?"
-            )
+            available_docs = _list_available_docs(db, dataset.id)
+            if available_docs:
+                docs_block = "\n".join(
+                    f"- **{d['title']}**" + (f" — {d['preview']}" if d['preview'] else "")
+                    for d in available_docs
+                )
+                no_context_msg = (
+                    "I don't see that topic in the uploaded course materials. "
+                    "Here's what I can help with:\n\n"
+                    f"{docs_block}\n\n"
+                    "Ask me about any of these, or rephrase your question. "
+                    "If you think this topic should be added, check with your instructor."
+                )
+            else:
+                no_context_msg = (
+                    "I don't see that topic in the uploaded course materials. "
+                    "Try rephrasing your question, or ask your instructor if this "
+                    "topic should be added."
+                )
         else:
             no_context_msg = (
                 "No course materials have been uploaded yet. "
@@ -503,21 +555,39 @@ THIS IS A CONCEPTUAL QUESTION. Follow this EXACT response structure:
 Do NOT give a flat paragraph explanation. Always use structured bullets + analogy + question.
 """
     elif msg_type == "meta":
-        if topic_snippets:
-            snippets_block = "\n".join(f"  - {s}..." for s in topic_snippets)
+        docs_for_meta: list[dict] = []
+        if dataset:
+            try:
+                docs_for_meta = _list_available_docs(db, dataset.id)
+            except Exception:
+                docs_for_meta = []
+
+        if docs_for_meta:
+            docs_block = "\n".join(
+                f"  - {d['title']}" + (f": {d['preview']}" if d['preview'] else "")
+                for d in docs_for_meta
+            )
             available_info = (
-                "Course materials have been uploaded. Here are sample excerpts so you know what topics are covered:\n"
-                f"{snippets_block}\n"
-                "When greeting, briefly mention the general subject areas you can help with (infer from the excerpts above). "
-                "Do NOT mention file names or document titles."
+                "Available documents and what they cover (use this list if the student "
+                "asks what you can help with, what topics are available, or what "
+                "documents exist):\n"
+                f"{docs_block}"
             )
         else:
-            available_info = "No course materials have been uploaded yet. Let the user know they can start chatting once their instructor uploads content."
+            available_info = (
+                "No course materials have been uploaded yet. Let the user know they "
+                "can start chatting once their instructor uploads content."
+            )
+
         system_prompt += f"""
-THIS IS A META QUESTION (greeting, logistics, or identity).
-- Be warm and concise (2-3 sentences max)
-- If about course logistics: say you don't have the schedule and suggest checking the syllabus
-- If a greeting: briefly explain you help with topics from the uploaded course materials through guided questions, not direct answers. {available_info}
+THIS IS A META QUESTION (greeting, logistics, identity, or a request to list what you can help with).
+
+{available_info}
+
+- If the student asks what you can help with / what topics you cover / what documents exist:
+  Respond with a short intro sentence, then a markdown bullet list of document titles and a brief description of each (infer description from the provided previews). End with a single inviting follow-up question. DO list the actual document titles in this case — it's the whole point.
+- If it's a general greeting: be warm and concise (2-3 sentences max). Mention 2-3 example topic areas (inferred from the documents above) but don't dump the full list.
+- If about course logistics (schedule, grading, office hours): say you don't have the schedule and suggest checking the syllabus.
 - If asked "who are you", "what model are you", "are you GPT/ChatGPT/Claude", or anything about your identity:
   Reply EXACTLY: "I am Contexto, an AI Tutor created by Dr. Vatsa Patel. I'm here to help you learn through guided questions and hints — not by giving you answers directly. All course materials and content are provided by your instructors; Dr. Patel is not responsible for uploaded content."
   NEVER mention OpenAI, GPT, ChatGPT, Claude, Anthropic, or any model name. You are Contexto, period.
