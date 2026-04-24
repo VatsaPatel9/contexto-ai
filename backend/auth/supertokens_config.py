@@ -51,12 +51,16 @@ def _override_emailverification_apis(original):
     releases and we'd rather not pin.
     """
 
-    original_verify_email_post = original.verify_email_post
+    # Method on supertokens-python APIInterface is named `email_verify_post`
+    # with signature (token, session, tenant_id, api_options, user_context).
+    # Confirmed against the installed
+    # supertokens_python/recipe/emailverification/interfaces.py.
+    original_email_verify_post = original.email_verify_post
     original_generate_token_post = original.generate_email_verify_token_post
 
-    async def verify_email_post(token, tenant_id, session, api_options, user_context):
-        result = await original_verify_email_post(
-            token, tenant_id, session, api_options, user_context
+    async def email_verify_post(token, session, tenant_id, api_options, user_context):
+        result = await original_email_verify_post(
+            token, session, tenant_id, api_options, user_context
         )
         if getattr(result, "status", None) == "OK" and session is None:
             # Fresh browser (no signup-time session cookie): create one
@@ -66,11 +70,17 @@ def _override_emailverification_apis(original):
                 user = getattr(result, "user", None)
                 recipe_user_id = getattr(user, "recipe_user_id", None)
                 if recipe_user_id is not None:
-                    await create_new_session(
+                    new_session = await create_new_session(
                         api_options.request,
                         tenant_id or "public",
                         recipe_user_id,
                     )
+                    # Attach to the result so the SDK's response helper
+                    # includes the session cookies on the outgoing response.
+                    try:
+                        result.new_session = new_session
+                    except Exception:
+                        pass
             except Exception:
                 # Auto-login is a nice-to-have; failure must not
                 # fail the verification.
@@ -114,7 +124,7 @@ def _override_emailverification_apis(original):
         finally:
             db.close()
 
-    original.verify_email_post = verify_email_post
+    original.email_verify_post = email_verify_post
     original.generate_email_verify_token_post = generate_email_verify_token_post
     return original
 
