@@ -66,24 +66,42 @@
     window.removeEventListener('mouseup', endResize);
   }
 
-  // React to chatId changes (handles both initial mount AND navigation between chats)
+  // Track which chat is currently loaded in memory so we know when a
+  // chatId change means "user switched threads" (reload + close viewer)
+  // vs "our own stream just assigned this chatId" (skip reload).
+  let loadedChatId: string | null = null;
+
   $effect(() => {
     const id = chatId;
     if (!id) {
+      closePdfViewer();
       currentChatId.set(null);
       messages = [];
       chatTitle = 'New Chat';
+      loadedChatId = null;
       return;
     }
     currentChatId.set(id);
-    // Skip the refetch when we already have the conversation in memory —
-    // e.g. right after our own stream just assigned chatId to this value.
-    // Without this guard, message_end would wipe the streamed markdown
-    // and replace it with the server-stored (post-processed) copy, which
-    // looks like a full-page reformat flash.
-    if (loading || messages.length > 0) return;
+
+    // Same chat as what's already loaded — nothing to do.
+    if (id === loadedChatId) return;
+
+    // Mid-stream of a brand-new chat: hydrateIfNew just set chatId on
+    // the window, but the stream is still running. Don't wipe the
+    // streamed content; just remember we're on this id now.
+    if (loading && messages.length > 0) {
+      loadedChatId = id;
+      return;
+    }
+
+    // User navigated to a different thread (sidebar click, back/forward,
+    // direct URL). Close any stale PDF viewer and reload.
+    closePdfViewer();
+    messages = [];
     chatTitle = 'Loading...';
-    loadConversation(id);
+    loadConversation(id).then(() => {
+      loadedChatId = id;
+    });
   });
 
   async function loadConversation(convId: string) {
@@ -214,6 +232,20 @@
 
         if (event.event === 'message_end') {
           hydrateIfNew(event.conversation_id);
+          // Bump this conversation to the top of the sidebar since it
+          // just got new activity. hydrateIfNew already prepends for
+          // newly-created chats; this handles the existing-chat case.
+          if (event.conversation_id) {
+            conversations.update((list) => {
+              const idx = list.findIndex((c) => c.id === event.conversation_id);
+              if (idx <= 0) return list;
+              const next = [...list];
+              const [moved] = next.splice(idx, 1);
+              moved.updatedAt = Date.now();
+              next.unshift(moved);
+              return next;
+            });
+          }
           const serverResources = event.metadata?.retriever_resources ?? null;
           if (assistantMsg.retrieverResources) {
             // LLM emitted a fence — enrich its citations with doc_id
