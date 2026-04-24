@@ -91,6 +91,13 @@
       <!-- Interactive comprehension check -->
       {#if message.done && message.quiz}
         <QuizBlock quiz={message.quiz} />
+      {:else if message.quizPending}
+        <div class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+          <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <div class="size-3.5 rounded-full border-2 border-gray-400 dark:border-gray-500 border-t-transparent animate-spin"></div>
+            Generating quick check…
+          </div>
+        </div>
       {/if}
 
       <!-- Suggested follow-up questions (chips) — submits on click -->

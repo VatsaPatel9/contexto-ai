@@ -46,6 +46,11 @@ export type ChatMessage = {
   // Resolved locally — the user picks and the component reveals the
   // correct answer + explanation. No round-trip needed.
   quiz?: import('$lib/utils/citations').Quiz | null;
+  // True while the `quiz` fence is open but not yet closed in the
+  // stream — UI shows a "Generating quiz…" placeholder so the pane
+  // doesn't look frozen between the main body ending and the quiz
+  // buttons arriving.
+  quizPending?: boolean;
 };
 
 export type Conversation = {

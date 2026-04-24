@@ -207,6 +207,9 @@
           if (c.citations) assistantMsg.retrieverResources = c.citations;
           if (s.suggestions) assistantMsg.suggestions = s.suggestions;
           if (q.quiz) assistantMsg.quiz = q.quiz;
+          // While the quiz fence is open but not yet closed, show a
+          // loading placeholder so the bubble doesn't freeze.
+          assistantMsg.quizPending = q.pending && !q.quiz;
           if (event.message_id && assistantMsg.id !== event.message_id) {
             assistantMsg.id = event.message_id;
           }
