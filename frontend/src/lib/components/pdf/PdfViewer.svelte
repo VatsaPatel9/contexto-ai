@@ -32,7 +32,12 @@
 
   let pdfjs: any = null;
   let pdfDoc: any = null;
-  let observer: IntersectionObserver | null = null;
+  // Two observers: one with a large rootMargin to lazy-render pages just
+  // before they scroll into view, and a second with zero rootMargin to
+  // track which page is actually visible for the "Page N of M" header.
+  let renderObserver: IntersectionObserver | null = null;
+  let activeObserver: IntersectionObserver | null = null;
+  let visibility = new Map<number, number>();
   let resizeObserver: ResizeObserver | null = null;
   let rendered = new Set<number>();
   let inflight = new Set<number>();
@@ -86,36 +91,67 @@
       loading = false;
 
       await tick();
-      setupIntersectionObserver();
+      setupObservers();
       setupResizeObserver();
       scrollToTarget();
+      // Seed the header with the target page so the UI doesn't flash
+      // "Page 1 of N" before the active-observer callback fires.
+      currentPage = Math.max(1, Math.min(page, aspectRatios.length));
     } catch (e: any) {
       errorText = e?.message || 'Failed to open document';
       loading = false;
     }
   }
 
-  function setupIntersectionObserver() {
+  function setupObservers() {
     if (!containerEl) return;
-    try { observer?.disconnect(); } catch {}
-    observer = new IntersectionObserver(
+    try { renderObserver?.disconnect(); } catch {}
+    try { activeObserver?.disconnect(); } catch {}
+    visibility.clear();
+
+    // Lazy render: fire when a page is near the viewport.
+    renderObserver = new IntersectionObserver(
       (entries) => {
-        for (const entry of entries) {
-          const idx = Number((entry.target as HTMLElement).dataset.pageIdx);
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          const idx = Number((e.target as HTMLElement).dataset.pageIdx);
           if (!Number.isFinite(idx)) continue;
-          if (entry.isIntersecting) {
-            if (!rendered.has(idx + 1) && !inflight.has(idx + 1)) {
-              renderPage(idx + 1);
-            }
-            if (entry.intersectionRatio > 0.3) {
-              currentPage = idx + 1;
-            }
+          if (!rendered.has(idx + 1) && !inflight.has(idx + 1)) {
+            renderPage(idx + 1);
           }
         }
       },
-      { root: containerEl, rootMargin: '200px 0px', threshold: [0, 0.3, 0.6] }
+      { root: containerEl, rootMargin: '200px 0px', threshold: 0 }
     );
-    for (const el of pageEls) if (el) observer.observe(el);
+
+    // Current-page tracking: strict viewport, track each page's visible
+    // ratio and pick the max. Uses a fine-grained threshold set so the
+    // ratio updates on scroll.
+    activeObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const idx = Number((e.target as HTMLElement).dataset.pageIdx);
+          if (!Number.isFinite(idx)) continue;
+          visibility.set(idx + 1, e.intersectionRatio);
+        }
+        let bestPage = currentPage;
+        let bestRatio = -1;
+        for (const [p, r] of visibility) {
+          if (r > bestRatio) {
+            bestRatio = r;
+            bestPage = p;
+          }
+        }
+        if (bestRatio > 0) currentPage = bestPage;
+      },
+      { root: containerEl, rootMargin: '0px', threshold: [0, 0.1, 0.25, 0.5, 0.75, 1.0] }
+    );
+
+    for (const el of pageEls) {
+      if (!el) continue;
+      renderObserver.observe(el);
+      activeObserver.observe(el);
+    }
   }
 
   function setupResizeObserver() {
@@ -146,9 +182,9 @@
       if (c) { c.width = 0; c.height = 0; }
       if (tl) tl.innerHTML = '';
     }
-    // Reconnect the intersection observer so it immediately fires for
-    // currently-visible pages and triggers renders at the new width.
-    setupIntersectionObserver();
+    // Reconnect observers so the render-observer fires for currently-
+    // visible pages and active-observer resets its ratio map.
+    setupObservers();
   }
 
   async function renderPage(n: number) {
@@ -232,9 +268,11 @@
     if (!pdfjs) return;
     rendered = new Set();
     inflight = new Set();
+    visibility = new Map();
     aspectRatios = [];
     pageEls = [];
-    try { observer?.disconnect(); } catch {}
+    try { renderObserver?.disconnect(); } catch {}
+    try { activeObserver?.disconnect(); } catch {}
     try { resizeObserver?.disconnect(); } catch {}
     try { pdfDoc?.destroy(); } catch {}
     setupDocument();
@@ -242,7 +280,8 @@
 
   onDestroy(() => {
     if (resizeTimer) clearTimeout(resizeTimer);
-    try { observer?.disconnect(); } catch {}
+    try { renderObserver?.disconnect(); } catch {}
+    try { activeObserver?.disconnect(); } catch {}
     try { resizeObserver?.disconnect(); } catch {}
     try { pdfDoc?.destroy(); } catch {}
   });
