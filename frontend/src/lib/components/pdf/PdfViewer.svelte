@@ -16,14 +16,16 @@
     onclose?: () => void;
   } = $props();
 
-  // Fixed CSS width for each page; canvas is rendered at a higher internal
-  // resolution so text stays crisp on Hi-DPI screens.
-  const PAGE_CSS_WIDTH = 720;
-  const RENDER_SCALE = 1.6;
+  // Horizontal padding applied to the pages column (tailwind px-2 = 0.5rem
+  // each side = 16px total). Used to derive available CSS width per page.
+  const COLUMN_PADDING = 16;
+  const MIN_PAGE_WIDTH = 200;
+  const MAX_PAGE_WIDTH = 1400;
 
   let containerEl: HTMLDivElement;
   let pageEls: HTMLDivElement[] = $state([]);
-  let dims = $state<{ w: number; h: number }[]>([]); // per-page CSS dimensions
+  let aspectRatios: number[] = $state([]); // height / width per page
+  let pageWidth = $state(720); // CSS width — tracked from ResizeObserver
   let errorText = $state<string | null>(null);
   let loading = $state(true);
   let currentPage = $state(page);
@@ -31,22 +33,35 @@
   let pdfjs: any = null;
   let pdfDoc: any = null;
   let observer: IntersectionObserver | null = null;
+  let resizeObserver: ResizeObserver | null = null;
   let rendered = new Set<number>();
   let inflight = new Set<number>();
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let dims = $derived(
+    aspectRatios.map((ar) => ({
+      w: pageWidth,
+      h: ar * pageWidth,
+    }))
+  );
 
   async function loadPdfjs() {
     if (pdfjs) return pdfjs;
     const mod = await import('pdfjs-dist');
-    // Vite's `?worker` suffix compiles the target as a Web Worker. Passing
-    // the constructed Worker to pdfjs via `workerPort` bypasses the
-    // .mjs MIME dance entirely — Vite serves the worker as a regular
-    // bundled JS file.
+    // Vite's `?worker` suffix bundles the target as a Web Worker — avoids
+    // MIME/cache issues with serving the raw .mjs through nginx.
     const { default: PdfWorker } = await import(
       'pdfjs-dist/build/pdf.worker.min.mjs?worker'
     );
     mod.GlobalWorkerOptions.workerPort = new PdfWorker();
     pdfjs = mod;
     return mod;
+  }
+
+  function measureWidth() {
+    if (!containerEl) return pageWidth;
+    const w = containerEl.clientWidth - COLUMN_PADDING;
+    return Math.max(MIN_PAGE_WIDTH, Math.min(MAX_PAGE_WIDTH, w));
   }
 
   async function setupDocument() {
@@ -57,22 +72,22 @@
       const { download_url } = await getDocumentSignedUrl(docId);
       pdfDoc = await lib.getDocument({ url: download_url }).promise;
 
-      // Prefetch every page's dimensions so we can lay out placeholders
-      // at the correct aspect ratio before any canvas renders. Makes the
-      // initial scroll stable.
-      const out: { w: number; h: number }[] = [];
+      // Prefetch aspect ratios only — page widths are derived from the
+      // measured container width, so placeholders can lay out before any
+      // canvas rasterizes.
+      const ars: number[] = [];
       for (let i = 1; i <= pdfDoc.numPages; i++) {
         const p = await pdfDoc.getPage(i);
         const vp = p.getViewport({ scale: 1 });
-        const w = PAGE_CSS_WIDTH;
-        const h = (vp.height / vp.width) * PAGE_CSS_WIDTH;
-        out.push({ w, h });
+        ars.push(vp.height / vp.width);
       }
-      dims = out;
+      aspectRatios = ars;
+      pageWidth = measureWidth();
       loading = false;
 
       await tick();
-      setupObserver();
+      setupIntersectionObserver();
+      setupResizeObserver();
       scrollToTarget();
     } catch (e: any) {
       errorText = e?.message || 'Failed to open document';
@@ -80,8 +95,9 @@
     }
   }
 
-  function setupObserver() {
+  function setupIntersectionObserver() {
     if (!containerEl) return;
+    try { observer?.disconnect(); } catch {}
     observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -91,7 +107,6 @@
             if (!rendered.has(idx + 1) && !inflight.has(idx + 1)) {
               renderPage(idx + 1);
             }
-            // Track which page is currently centred for the header display.
             if (entry.intersectionRatio > 0.3) {
               currentPage = idx + 1;
             }
@@ -100,9 +115,40 @@
       },
       { root: containerEl, rootMargin: '200px 0px', threshold: [0, 0.3, 0.6] }
     );
+    for (const el of pageEls) if (el) observer.observe(el);
+  }
+
+  function setupResizeObserver() {
+    if (!containerEl) return;
+    try { resizeObserver?.disconnect(); } catch {}
+    resizeObserver = new ResizeObserver(() => {
+      const w = measureWidth();
+      // Debounce: ignore sub-4px noise and rapid drags.
+      if (Math.abs(w - pageWidth) < 4) return;
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        pageWidth = w;
+        handleWidthChange();
+      }, 80);
+    });
+    resizeObserver.observe(containerEl);
+  }
+
+  // Called after pageWidth changes: clear rasterized state so visible pages
+  // re-render at the new CSS size (and therefore new canvas resolution).
+  function handleWidthChange() {
+    rendered = new Set();
+    inflight = new Set();
     for (const el of pageEls) {
-      if (el) observer.observe(el);
+      if (!el) continue;
+      const c = el.querySelector('canvas') as HTMLCanvasElement | null;
+      const tl = el.querySelector('.text-layer') as HTMLDivElement | null;
+      if (c) { c.width = 0; c.height = 0; }
+      if (tl) tl.innerHTML = '';
     }
+    // Reconnect the intersection observer so it immediately fires for
+    // currently-visible pages and triggers renders at the new width.
+    setupIntersectionObserver();
   }
 
   async function renderPage(n: number) {
@@ -110,7 +156,13 @@
     inflight.add(n);
     try {
       const pdfPage = await pdfDoc.getPage(n);
-      const vp = pdfPage.getViewport({ scale: RENDER_SCALE });
+      const rawVp = pdfPage.getViewport({ scale: 1 });
+      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+      // Scale native PDF coords up to (CSS width × DPR) so the canvas
+      // matches the current display size with HiDPI-crisp pixels.
+      const renderScale = (pageWidth * dpr) / rawVp.width;
+      const vp = pdfPage.getViewport({ scale: renderScale });
+
       const wrap = pageEls[n - 1];
       if (!wrap) return;
       const canvas = wrap.querySelector('canvas') as HTMLCanvasElement | null;
@@ -119,9 +171,6 @@
 
       canvas.width = vp.width;
       canvas.height = vp.height;
-      // CSS size stays at PAGE_CSS_WIDTH × aspect; internal resolution is
-      // vp.width × vp.height (higher). Browser scales the canvas down →
-      // sharp rendering on HiDPI.
       canvas.style.width = '100%';
       canvas.style.height = '100%';
 
@@ -134,9 +183,10 @@
         try {
           const tc = await pdfPage.getTextContent();
           const needle = highlight.trim().toLowerCase();
-          // Text layer is positioned in CSS pixels matching the CSS size.
-          // Scale the transform matrix down from render-scale coords to CSS.
-          const cssVp = pdfPage.getViewport({ scale: dims[n - 1].w / (vp.width / RENDER_SCALE) });
+          // Text layer CSS space = pageWidth × (pageWidth * aspect).
+          // Use a CSS-scale viewport (scale = pageWidth / rawVp.width).
+          const cssScale = pageWidth / rawVp.width;
+          const cssVp = pdfPage.getViewport({ scale: cssScale });
           for (const item of tc.items as any[]) {
             const str: string = item.str ?? '';
             if (!str.trim()) continue;
@@ -152,12 +202,12 @@
             span.style.color = 'transparent';
             span.style.pointerEvents = 'none';
             if (needle && str.toLowerCase().includes(needle)) {
-              span.style.background = 'rgba(250, 204, 21, 0.45)'; // amber-400/45
+              span.style.background = 'rgba(250, 204, 21, 0.45)';
             }
             textLayer.appendChild(span);
           }
         } catch {
-          // Text-layer failure is non-fatal — canvas still shows.
+          // text layer is best-effort
         }
       }
 
@@ -169,30 +219,31 @@
 
   function scrollToTarget() {
     if (!containerEl) return;
-    const idx = Math.max(0, Math.min(page - 1, dims.length - 1));
+    const idx = Math.max(0, Math.min(page - 1, aspectRatios.length - 1));
     const el = pageEls[idx];
     if (el) el.scrollIntoView({ block: 'start', behavior: 'auto' });
   }
 
   onMount(setupDocument);
 
-  // If the parent passes a new docId (user clicks a different citation),
-  // tear down and reload.
+  // User clicked a different citation while the viewer is already open.
   $effect(() => {
     void docId;
-    // Only react after initial mount
     if (!pdfjs) return;
     rendered = new Set();
     inflight = new Set();
-    dims = [];
+    aspectRatios = [];
     pageEls = [];
     try { observer?.disconnect(); } catch {}
+    try { resizeObserver?.disconnect(); } catch {}
     try { pdfDoc?.destroy(); } catch {}
     setupDocument();
   });
 
   onDestroy(() => {
+    if (resizeTimer) clearTimeout(resizeTimer);
     try { observer?.disconnect(); } catch {}
+    try { resizeObserver?.disconnect(); } catch {}
     try { pdfDoc?.destroy(); } catch {}
   });
 </script>
@@ -202,8 +253,8 @@
   <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
     <div class="min-w-0 pr-3">
       <div class="text-sm font-medium truncate text-gray-900 dark:text-gray-100">{title}</div>
-      {#if dims.length}
-        <div class="text-[11px] text-gray-500 dark:text-gray-400">Page {currentPage} of {dims.length}</div>
+      {#if aspectRatios.length}
+        <div class="text-[11px] text-gray-500 dark:text-gray-400">Page {currentPage} of {aspectRatios.length}</div>
       {/if}
     </div>
     <button
@@ -250,8 +301,6 @@
 </div>
 
 <style>
-  /* The text layer sits on top of the canvas at the same CSS size; spans
-     inside are absolutely positioned to match the PDF text coordinates. */
   :global(.text-layer span) {
     line-height: 1;
   }

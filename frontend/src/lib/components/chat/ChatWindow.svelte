@@ -35,6 +35,37 @@
   let inputValue = $state('');
   let messagesContainer: HTMLDivElement;
 
+  // Resizable split between chat and PDF viewer. Value is the viewer
+  // column's share of the row, as a percentage (25–75%).
+  let viewerPct = $state(50);
+  let splitContainer: HTMLDivElement;
+  let isResizing = $state(false);
+
+  function startResize(e: MouseEvent) {
+    e.preventDefault();
+    isResizing = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onResize);
+    window.addEventListener('mouseup', endResize);
+  }
+
+  function onResize(e: MouseEvent) {
+    if (!splitContainer || !isResizing) return;
+    const rect = splitContainer.getBoundingClientRect();
+    const xFromRight = rect.right - e.clientX;
+    const pct = (xFromRight / rect.width) * 100;
+    viewerPct = Math.max(25, Math.min(75, pct));
+  }
+
+  function endResize() {
+    isResizing = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onResize);
+    window.removeEventListener('mouseup', endResize);
+  }
+
   // React to chatId changes (handles both initial mount AND navigation between chats)
   $effect(() => {
     const id = chatId;
@@ -224,7 +255,7 @@
   }
 </script>
 
-<div class="h-full max-h-[100dvh] flex">
+<div bind:this={splitContainer} class="h-full max-h-[100dvh] flex">
   <!-- Chat column (narrows when the PDF panel is open) -->
   <div class="h-full flex-1 min-w-0 flex flex-col">
     <Navbar title={chatTitle} />
@@ -250,9 +281,20 @@
     />
   </div>
 
-  <!-- Right-side PDF viewer panel -->
+  <!-- Right-side PDF viewer panel (resizable) -->
   {#if $pdfViewerRequest}
-    <div class="h-full hidden md:block md:w-[45%] lg:w-[50%] xl:w-[55%] max-w-[900px] shrink-0">
+    <!-- Drag gutter -->
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize viewer"
+      class="hidden md:flex shrink-0 w-1.5 cursor-col-resize items-stretch bg-gray-200 dark:bg-gray-800 hover:bg-blue-400 dark:hover:bg-blue-500 transition
+             {isResizing ? 'bg-blue-500' : ''}"
+      onmousedown={startResize}
+      ondblclick={() => (viewerPct = 50)}
+      title="Drag to resize · double-click to reset"
+    ></div>
+    <div class="h-full hidden md:block shrink-0" style="flex-basis: {viewerPct}%">
       <PdfViewer
         docId={$pdfViewerRequest.docId}
         title={$pdfViewerRequest.title}
