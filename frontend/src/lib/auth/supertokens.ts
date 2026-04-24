@@ -27,7 +27,20 @@ export function initSuperTokens() {
     recipeList: [
       Session.init(),
       EmailPassword.init(),
-      EmailVerification.init(),
+      EmailVerification.init({
+        // Single-tenant app: force the web-js SDK to always use the
+        // 'public' tenant regardless of what's in the URL query
+        // string. Without this the SDK reads ?tenantId=... verbatim,
+        // so a stale/corrupted email link routes to a non-existent
+        // tenant path (e.g. /auth/<something>/user/email/verify) and
+        // the Core returns "Tenant not found".
+        override: {
+          functions: (orig) => ({
+            ...orig,
+            getTenantIdFromURL: () => 'public',
+          }),
+        },
+      }),
     ],
   });
 
