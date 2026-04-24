@@ -63,6 +63,21 @@
         <Markdown content={message.content} />
       </div>
 
+      <!-- Sources (above action bar) -->
+      {#if message.done && message.retrieverResources && message.retrieverResources.length > 0}
+        <div class="mt-2 flex flex-wrap gap-1.5">
+          {#each message.retrieverResources as source}
+            <span
+              class="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full
+                     bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
+              title={source.score != null ? `Relevance: ${(source.score * 100).toFixed(0)}%` : source.section ?? ''}
+            >
+              {source.doc_title}{source.page_num ? ` (p. ${source.page_num})` : ''}
+            </span>
+          {/each}
+        </div>
+      {/if}
+
       <!-- Action buttons -->
       {#if message.done}
         <div class="flex justify-start overflow-x-auto text-gray-600 dark:text-gray-500 mt-0.5">
@@ -115,21 +130,6 @@
             </svg>
           </button>
         </div>
-
-        <!-- Sources -->
-        {#if message.retrieverResources && message.retrieverResources.length > 0}
-          <div class="mt-2 flex flex-wrap gap-1.5">
-            {#each message.retrieverResources as source}
-              <span
-                class="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full
-                       bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
-                title={source.score != null ? `Relevance: ${(source.score * 100).toFixed(0)}%` : source.section ?? ''}
-              >
-                {source.doc_title}{source.page_num ? ` (p. ${source.page_num})` : ''}
-              </span>
-            {/each}
-          </div>
-        {/if}
       {/if}
     {/if}
   </div>
