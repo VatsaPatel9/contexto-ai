@@ -17,6 +17,7 @@
     type ApiMessage
   } from '$lib/apis/contexto';
   import { generateId, generateTitle, scrollToBottom } from '$lib/utils';
+  import { parseCitationsFence } from '$lib/utils/citations';
 
   import Navbar from '$lib/components/layout/Navbar.svelte';
   import Messages from '$lib/components/chat/Messages.svelte';
@@ -66,14 +67,18 @@
   }
 
   function apiMessageToChat(msg: ApiMessage): ChatMessage {
+    // Stored assistant text may contain a `citations` fence. Strip it for
+    // display and prefer the parsed citations over the server's retriever
+    // metadata so badges reflect what the LLM actually cited.
+    const { display, citations } = parseCitationsFence(msg.content);
     return {
       id: msg.id,
       role: msg.role,
-      content: msg.content,
+      content: display,
       timestamp: msg.created_at * 1000,
       messageType: msg.message_type,
       done: true,
-      retrieverResources: msg.retriever_resources
+      retrieverResources: citations ?? msg.retriever_resources
     };
   }
 
@@ -108,7 +113,14 @@
 
       for await (const event of stream) {
         if (event.event === 'message' || event.event === 'agent_message') {
-          assistantMsg.content += event.answer ?? '';
+          // Accumulate into _raw; derive visible `content` by stripping the
+          // citations fence (if it has started). While the fence is open
+          // but not yet closed, the region after it stays hidden — user
+          // never sees raw JSON.
+          assistantMsg._raw = (assistantMsg._raw ?? '') + (event.answer ?? '');
+          const { display, citations } = parseCitationsFence(assistantMsg._raw);
+          assistantMsg.content = display;
+          if (citations) assistantMsg.retrieverResources = citations;
           if (event.message_id && assistantMsg.id !== event.message_id) {
             assistantMsg.id = event.message_id;
           }
@@ -143,7 +155,9 @@
 
         if (event.event === 'message_end') {
           hydrateIfNew(event.conversation_id);
-          if (event.metadata?.retriever_resources) {
+          // Only fall back to the server's retriever metadata if the LLM
+          // didn't emit a citations fence during the stream.
+          if (!assistantMsg.retrieverResources && event.metadata?.retriever_resources) {
             assistantMsg.retrieverResources = event.metadata.retriever_resources;
           }
         }

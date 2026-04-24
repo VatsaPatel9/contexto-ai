@@ -123,7 +123,7 @@
               <span
                 class="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full
                        bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
-                title="Relevance: {(source.score * 100).toFixed(0)}%"
+                title={source.score != null ? `Relevance: ${(source.score * 100).toFixed(0)}%` : source.section ?? ''}
               >
                 {source.doc_title}{source.page_num ? ` (p. ${source.page_num})` : ''}
               </span>

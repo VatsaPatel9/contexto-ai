@@ -12,12 +12,16 @@ export type ChatMessage = {
   done?: boolean;
   error?: string;
   feedback?: 'like' | 'dislike' | null;
+  // Raw accumulated stream text (pre-fence-strip). Used only during
+  // streaming so we can keep appending chunks and re-parse the
+  // citations fence as it completes. Never shown to the user.
+  _raw?: string;
   retrieverResources?: Array<{
     doc_title: string;
-    doc_id: string;
-    page_num: number;
-    section: string;
-    score: number;
+    doc_id?: string;
+    page_num?: number;
+    section?: string;
+    score?: number;
   }> | null;
 };
 

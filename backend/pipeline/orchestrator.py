@@ -476,7 +476,7 @@ IMPORTANT — THIS IS A HOMEWORK QUESTION. Follow this EXACT response structure:
 
 5. **Encouragement + Socratic question**: Use growth-mindset language ("You are making progress"). End with a specific question: "Which part seems most confusing?" or "What would you try next?"
 
-6. **Citation**: Always end with [Source: document, Section: X, p.Y]
+6. **Citations fence**: End with a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
 
 NEVER give the final answer, result, or solution. If you catch yourself about to state the answer, STOP and convert it into a question.
 """
@@ -498,7 +498,7 @@ THIS IS A CONCEPTUAL QUESTION. Follow this EXACT response structure:
 
 5. **Follow-up**: End with a specific Socratic question to check understanding or deepen learning: "Which of these differences seems most confusing right now?" or "Can you explain back to me how X works?"
 
-6. **Citation**: [Source: document, Section: X, p.Y]
+6. **Citations fence**: End with a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
 
 Do NOT give a flat paragraph explanation. Always use structured bullets + analogy + question.
 """
@@ -621,11 +621,13 @@ THIS IS A META QUESTION (greeting, logistics, or identity).
             logger.warning("Humanizer failed, using original: %s", exc)
 
     # ------------------------------------------------------------------
-    # 13. Citation formatting (for stored message only)
+    # 13. Collect retrieval metadata (fallback for when the LLM skips
+    #     the citations fence). The LLM now emits a `citations` code
+    #     fence at the end of its response; the frontend parses it and
+    #     renders badges from there. We no longer rewrite the text.
     # ------------------------------------------------------------------
     retrieval_sources_json: list[dict] | None = None
     if source_chunks:
-        stored_response = _citation_formatter.format_citations(stored_response, source_chunks)
         retrieval_sources_json = [
             {
                 "doc_title": c.doc_title,
