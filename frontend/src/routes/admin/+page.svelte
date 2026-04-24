@@ -255,17 +255,9 @@
     if (!selectedProfile) return;
     try {
       if (uploadEnabled) {
-        // Revoke: remove limit and uploader role
         await revokeUploadLimit(selectedProfile.user_id);
-        if (selectedProfile.roles.includes('user_uploader')) {
-          await removeRole(selectedProfile.user_id, 'user_uploader');
-        }
         toast.success('Upload permission revoked');
       } else {
-        // Grant: assign uploader role and set a default limit
-        if (!selectedProfile.roles.includes('user_uploader')) {
-          await assignRole(selectedProfile.user_id, 'user_uploader');
-        }
         await setUploadLimit(selectedProfile.user_id, 10);
         editUploadLimit = '10';
         toast.success('Upload permission granted (limit: 10)');
@@ -286,9 +278,6 @@
         toast.success('Upload limit set to unlimited');
       } else if (val === 'none' || val === 'revoke') {
         await revokeUploadLimit(selectedProfile.user_id);
-        if (selectedProfile.roles.includes('user_uploader')) {
-          await removeRole(selectedProfile.user_id, 'user_uploader');
-        }
         toast.success('Upload permission revoked');
       } else {
         const limit = parseInt(val, 10);
