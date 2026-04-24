@@ -1,0 +1,23 @@
+# Railway config for the FastAPI backend service.
+# In the Railway dashboard for this service set:
+#   Root Directory     = /backend
+#   Config-as-code Path = /backend/railway.toml
+#
+# watchPatterns is resolved relative to the repo root, so we scope
+# rebuilds to the backend/ directory.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Overrides the dev CMD (which runs uvicorn with --reload).
+# Railway injects $PORT; uvicorn must bind 0.0.0.0:$PORT.
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+[deploy.watchPatterns]
+patterns = ["backend/**"]
