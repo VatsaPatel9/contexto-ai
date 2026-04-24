@@ -37,6 +37,12 @@
     $authStore.roles.includes('super_admin')
   );
 
+  // True while any attached file is still being uploaded/processed by the backend.
+  // Chat input is disabled until the upload resolves (success or error).
+  let isUploading = $derived(
+    attachedFiles.some((f) => f.status === 'pending' || f.status === 'uploading')
+  );
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -46,7 +52,7 @@
 
   function submit() {
     const text = value.trim();
-    if (!text || loading) return;
+    if (!text || loading || isUploading) return;
     onsubmit?.(text);
     value = '';
     attachedFiles = [];
@@ -187,12 +193,14 @@
       bind:value
       onkeydown={handleKeydown}
       oninput={autoResize}
-      placeholder="Send a message..."
+      placeholder={isUploading ? 'Uploading document — please wait…' : 'Send a message...'}
+      disabled={isUploading}
       rows="1"
       class="scrollbar-hidden bg-transparent dark:text-gray-100 outline-hidden w-full
              resize-none h-fit max-h-96 overflow-auto
              {attachedFiles.length > 0 ? 'pt-1.5' : 'pt-2.5'} pb-1 px-3 text-[15px]
-             placeholder-gray-400 dark:placeholder-gray-500"
+             placeholder-gray-400 dark:placeholder-gray-500
+             disabled:opacity-60 disabled:cursor-not-allowed"
     ></textarea>
 
     <!-- Bottom row: actions -->
@@ -257,11 +265,11 @@
         {:else}
           <button
             onclick={submit}
-            disabled={!value.trim()}
+            disabled={!value.trim() || isUploading}
             class="p-2 rounded-full bg-gray-900 dark:bg-white text-white dark:text-gray-900
                    hover:opacity-80 transition
                    disabled:opacity-20 disabled:cursor-not-allowed"
-            title="Send message"
+            title={isUploading ? 'Waiting for upload to finish' : 'Send message'}
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <line x1="22" y1="2" x2="11" y2="13" />
