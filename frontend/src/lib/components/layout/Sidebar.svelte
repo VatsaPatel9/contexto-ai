@@ -55,7 +55,7 @@
   }
 
   function openChat(id: string) {
-    goto(`/c/${id}`);
+    goto(`/chat/${id}`);
     if ($mobile) showSidebar.set(false);
   }
 

@@ -227,7 +227,7 @@
           // Update the URL silently — don't use goto(), which re-runs the
           // SvelteKit route and would remount ChatWindow mid-stream.
           if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', `/c/${chatId}`);
+            window.history.replaceState(null, '', `/chat/${chatId}`);
           }
         };
 
