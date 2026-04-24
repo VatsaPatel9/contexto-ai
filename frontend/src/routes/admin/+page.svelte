@@ -58,7 +58,10 @@
   let searchQuery = $state('');
   let showDropdown = $state(false);
   let searchResults = $derived(() => {
-    const all = allUserIds();
+    const currentUserId = $authStore.userId;
+    // Exclude the currently logged-in admin from their own user picker —
+    // self-management belongs on the profile page, not here.
+    const all = allUserIds().filter((id) => id !== currentUserId);
     if (!searchQuery.trim()) return all.slice(0, 8);
     const q = searchQuery.toLowerCase();
     return all.filter((id) => {
