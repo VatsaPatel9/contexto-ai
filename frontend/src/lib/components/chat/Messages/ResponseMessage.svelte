@@ -13,6 +13,24 @@
   let localFeedback = $state<'like' | 'dislike' | null>(null);
   let effectiveFeedback = $derived(localFeedback ?? feedbackState);
 
+  // Dedupe citation badges by (doc_title, page_num). Multiple retrieved
+  // chunks often come from the same page — showing the same pill seven
+  // times is noise. Keep the first one (highest-scored, since the
+  // server returns sources sorted by relevance).
+  let uniqueCitations = $derived.by(() => {
+    const list = message.retrieverResources;
+    if (!list || list.length === 0) return [];
+    const seen = new Set<string>();
+    const out: typeof list = [];
+    for (const c of list) {
+      const key = `${c.doc_title}::${c.page_num ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
+    return out;
+  });
+
   async function handleCopy() {
     const ok = await copyToClipboard(message.content);
     if (ok) {
@@ -64,9 +82,9 @@
       </div>
 
       <!-- Sources (above action bar) — clickable when doc_id is known -->
-      {#if message.done && message.retrieverResources && message.retrieverResources.length > 0}
+      {#if message.done && uniqueCitations.length > 0}
         <div class="mt-2 flex flex-wrap gap-1.5">
-          {#each message.retrieverResources as source}
+          {#each uniqueCitations as source}
             {@const clickable = !!source.doc_id}
             <button
               type="button"
