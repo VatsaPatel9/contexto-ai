@@ -113,27 +113,35 @@
           if (messagesContainer) scrollToBottom(messagesContainer);
         }
 
+        // Hoist the new-conversation hydration so message_end AND error paths
+        // both add the thread to the sidebar. The backend now saves the user
+        // prompt + assistant reply even on refusal/block paths, so the sidebar
+        // should reflect that work regardless of how the turn ended.
+        const hydrateIfNew = (newId?: string) => {
+          if (!newId || chatId) return;
+          chatId = newId;
+          chatTitle = generateTitle(text);
+          currentChatId.set(chatId);
+          const newConv: Conversation = {
+            id: chatId,
+            name: chatTitle,
+            courseId,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          };
+          conversations.update((list) => [newConv, ...list]);
+          goto(`/c/${chatId}`, { replaceState: true });
+        };
+
         if (event.event === 'message_end') {
-          if (event.conversation_id && !chatId) {
-            chatId = event.conversation_id;
-            chatTitle = generateTitle(text);
-            currentChatId.set(chatId);
-            const newConv: Conversation = {
-              id: chatId,
-              name: chatTitle,
-              courseId,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            };
-            conversations.update((list) => [newConv, ...list]);
-            goto(`/c/${chatId}`, { replaceState: true });
-          }
+          hydrateIfNew(event.conversation_id);
           if (event.metadata?.retriever_resources) {
             assistantMsg.retrieverResources = event.metadata.retriever_resources;
           }
         }
 
         if (event.event === 'error') {
+          hydrateIfNew(event.conversation_id);
           assistantMsg.error = event.message ?? 'An error occurred';
           messages = [...messages.slice(0, -1), { ...assistantMsg }];
           toast.error(event.message ?? 'An error occurred');

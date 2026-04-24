@@ -84,6 +84,64 @@ _ATTEMPT_FIRST_MSG = (
 )
 
 
+def _persist_early_exit(
+    db: Session,
+    *,
+    conversation_id: str | None,
+    user_id: str,
+    course_id: str,
+    user_query: str,
+    msg_type: str,
+    has_attempt: bool,
+    assistant_content: str,
+) -> str:
+    """Create (or reuse) a conversation, save user + assistant messages, return the id.
+
+    Used for every path that would otherwise return without persisting:
+    offensive-language blocks, prompt-injection blocks, attempt-first refusal,
+    and no-context refusal. Keeping these interactions in the DB preserves
+    the sidebar thread and the audit trail.
+    """
+    conv_uuid = None
+    if conversation_id:
+        try:
+            candidate = uuid.UUID(conversation_id)
+            existing = db.query(Conversation).filter(Conversation.id == candidate).first()
+            if existing is not None:
+                conv_uuid = candidate
+        except ValueError:
+            conv_uuid = None
+
+    if conv_uuid is None:
+        new_conv = Conversation(
+            user_id=user_id,
+            course_id=course_id,
+            name=user_query[:100],
+            hint_level=0,
+            interaction_count=0,
+        )
+        db.add(new_conv)
+        db.flush()
+        conv_uuid = new_conv.id
+
+    db.add(Message(
+        conversation_id=conv_uuid,
+        role="user",
+        content=user_query,
+        message_type=msg_type,
+        has_attempt=has_attempt,
+    ))
+    db.add(Message(
+        conversation_id=conv_uuid,
+        role="assistant",
+        content=assistant_content,
+        message_type=msg_type,
+        has_attempt=False,
+    ))
+    db.commit()
+    return str(conv_uuid)
+
+
 async def process_chat_message(
     query: str,
     conversation_id: str | None,
@@ -152,16 +210,43 @@ async def process_chat_message(
         )
 
         if offense_record.new_flag_level == FlagLevel.SUSPENDED.value:
+            suspend_msg = ("Your account has been suspended due to repeated policy violations. "
+                           "Please contact your instructor or advisor.")
+            conversation_id = _persist_early_exit(
+                db,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                course_id=course_id,
+                user_query=query,
+                msg_type="blocked",
+                has_attempt=False,
+                assistant_content=suspend_msg,
+            )
             yield _sse({
                 "event": "error",
-                "message": "Your account has been suspended due to repeated policy violations. "
-                           "Please contact your instructor or advisor.",
+                "message": suspend_msg,
                 "code": "account_suspended",
+                "conversation_id": conversation_id,
             })
             return
 
         if offense_result.severity in ("moderate", "severe"):
-            yield _sse({"event": "error", "message": _OFFENSIVE_BLOCK_MSG, "code": "offensive_language"})
+            conversation_id = _persist_early_exit(
+                db,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                course_id=course_id,
+                user_query=query,
+                msg_type="blocked",
+                has_attempt=False,
+                assistant_content=_OFFENSIVE_BLOCK_MSG,
+            )
+            yield _sse({
+                "event": "error",
+                "message": _OFFENSIVE_BLOCK_MSG,
+                "code": "offensive_language",
+                "conversation_id": conversation_id,
+            })
             return
 
         # Mild offense: warn the user but continue processing
@@ -191,7 +276,22 @@ async def process_chat_message(
     # ------------------------------------------------------------------
     injection_result = _injection_filter.check_injection(working_query)
     if injection_result.is_injection:
-        yield _sse({"event": "error", "message": _INJECTION_BLOCK_MSG, "code": "prompt_injection"})
+        conversation_id = _persist_early_exit(
+            db,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            course_id=course_id,
+            user_query=query,
+            msg_type="blocked",
+            has_attempt=False,
+            assistant_content=_INJECTION_BLOCK_MSG,
+        )
+        yield _sse({
+            "event": "error",
+            "message": _INJECTION_BLOCK_MSG,
+            "code": "prompt_injection",
+            "conversation_id": conversation_id,
+        })
         return
 
     # ------------------------------------------------------------------
@@ -208,14 +308,24 @@ async def process_chat_message(
         attempt = detect_attempt(working_query)
         has_attempt = attempt.has_attempt
         if not attempt.has_attempt:
+            conversation_id = _persist_early_exit(
+                db,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                course_id=course_id,
+                user_query=query,
+                msg_type=msg_type,
+                has_attempt=False,
+                assistant_content=_ATTEMPT_FIRST_MSG,
+            )
             yield _sse({
                 "event": "message",
                 "answer": _ATTEMPT_FIRST_MSG,
-                "conversation_id": conversation_id or "",
+                "conversation_id": conversation_id,
                 "message_id": "",
                 "created_at": now_ts,
             })
-            yield _sse({"event": "message_end", "conversation_id": conversation_id or "", "message_id": "", "metadata": {}})
+            yield _sse({"event": "message_end", "conversation_id": conversation_id, "message_id": "", "metadata": {}})
             return
 
     # ------------------------------------------------------------------
@@ -299,14 +409,24 @@ async def process_chat_message(
                 "Please ask your instructor to upload content so I can help you learn.\n\n"
                 "In the meantime, feel free to say hi!"
             )
+        conversation_id = _persist_early_exit(
+            db,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            course_id=course_id,
+            user_query=query,
+            msg_type=msg_type,
+            has_attempt=has_attempt,
+            assistant_content=no_context_msg,
+        )
         yield _sse({
             "event": "message",
             "answer": no_context_msg,
-            "conversation_id": conversation_id or "",
+            "conversation_id": conversation_id,
             "message_id": "",
             "created_at": now_ts,
         })
-        yield _sse({"event": "message_end", "conversation_id": conversation_id or "", "message_id": "", "metadata": {}})
+        yield _sse({"event": "message_end", "conversation_id": conversation_id, "message_id": "", "metadata": {}})
         return
 
     # ------------------------------------------------------------------
