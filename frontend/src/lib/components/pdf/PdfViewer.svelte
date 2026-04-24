@@ -37,8 +37,14 @@
   async function loadPdfjs() {
     if (pdfjs) return pdfjs;
     const mod = await import('pdfjs-dist');
-    const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
-    mod.GlobalWorkerOptions.workerSrc = workerUrl;
+    // Vite's `?worker` suffix compiles the target as a Web Worker. Passing
+    // the constructed Worker to pdfjs via `workerPort` bypasses the
+    // .mjs MIME dance entirely — Vite serves the worker as a regular
+    // bundled JS file.
+    const { default: PdfWorker } = await import(
+      'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+    );
+    mod.GlobalWorkerOptions.workerPort = new PdfWorker();
     pdfjs = mod;
     return mod;
   }
