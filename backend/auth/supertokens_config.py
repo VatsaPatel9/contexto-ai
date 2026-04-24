@@ -27,12 +27,6 @@ from supertokens_python.recipe.emailpassword.types import FormField, InputFormFi
 from supertokens_python.recipe.emailverification.emaildelivery.services.smtp import (
     SMTPService as EmailVerificationSMTPService,
 )
-from supertokens_python.recipe.emailverification.interfaces import (
-    APIInterface as EmailVerificationAPIInterface,
-    APIOptions as EmailVerificationAPIOptions,
-    GenerateEmailVerifyTokenPostOkResult,
-    VerifyEmailPostOkResult,
-)
 from supertokens_python.types import GeneralErrorResponse
 
 from backend.config import Settings
@@ -41,7 +35,7 @@ RESEND_WINDOW_HOURS = 24
 RESEND_MAX_ATTEMPTS = 3
 
 
-def _override_emailverification_apis(original: EmailVerificationAPIInterface) -> EmailVerificationAPIInterface:
+def _override_emailverification_apis(original):
     """Two tweaks on the emailverification endpoints:
 
     1. After a successful POST /auth/user/email/verify (the link-click
@@ -51,43 +45,39 @@ def _override_emailverification_apis(original: EmailVerificationAPIInterface) ->
 
     2. Rate-limit POST /auth/user/email/verify/token (user-initiated
        resend) to RESEND_MAX_ATTEMPTS per RESEND_WINDOW_HOURS per user.
+
+    Response types are checked by their .status attribute rather than
+    imported classes — the class names move between supertokens-python
+    releases and we'd rather not pin.
     """
 
     original_verify_email_post = original.verify_email_post
     original_generate_token_post = original.generate_email_verify_token_post
 
-    async def verify_email_post(
-        token: str,
-        tenant_id: str,
-        session,
-        api_options: EmailVerificationAPIOptions,
-        user_context,
-    ):
+    async def verify_email_post(token, tenant_id, session, api_options, user_context):
         result = await original_verify_email_post(
             token, tenant_id, session, api_options, user_context
         )
-        if isinstance(result, VerifyEmailPostOkResult) and session is None:
+        if getattr(result, "status", None) == "OK" and session is None:
             # Fresh browser (no signup-time session cookie): create one
             # so the frontend redirects into a signed-in state.
             try:
                 from supertokens_python.recipe.session.asyncio import create_new_session
-                await create_new_session(
-                    api_options.request,
-                    tenant_id or "public",
-                    result.user.recipe_user_id,
-                )
+                user = getattr(result, "user", None)
+                recipe_user_id = getattr(user, "recipe_user_id", None)
+                if recipe_user_id is not None:
+                    await create_new_session(
+                        api_options.request,
+                        tenant_id or "public",
+                        recipe_user_id,
+                    )
             except Exception:
-                # Auto-login is a nice-to-have; failure should not
+                # Auto-login is a nice-to-have; failure must not
                 # fail the verification.
                 pass
         return result
 
-    async def generate_email_verify_token_post(
-        session,
-        api_options: EmailVerificationAPIOptions,
-        user_context,
-    ):
-        # Lazy import to avoid circular imports at module load time.
+    async def generate_email_verify_token_post(session, api_options, user_context):
         from datetime import datetime, timedelta, timezone
         from backend.database import SessionLocal
         from backend.models.email_verification_attempt import EmailVerificationAttempt
@@ -116,7 +106,7 @@ def _override_emailverification_apis(original: EmailVerificationAPIInterface) ->
 
             result = await original_generate_token_post(session, api_options, user_context)
 
-            if isinstance(result, GenerateEmailVerifyTokenPostOkResult):
+            if getattr(result, "status", None) == "OK":
                 db.add(EmailVerificationAttempt(user_id=user_id))
                 db.commit()
 
