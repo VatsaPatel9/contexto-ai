@@ -137,7 +137,7 @@
   type="file"
   hidden
   multiple
-  accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls"
+  accept=".pdf,.doc,.docx,.ppt,.pptx,.odt,.odp,.rtf,.txt,.md,.csv,.xlsx,.xls"
   onchange={handleFilesSelected}
 />
 

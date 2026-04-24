@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session as DBSession
@@ -22,6 +23,7 @@ from backend.rag.extractors import extract_pdf_images, extract_text, is_pdf
 from backend.rag.splitter import RecursiveCharacterTextSplitter
 from backend.rag.vision import VisionProcessor
 from backend.schemas.dataset import DocumentListResponse, DocumentUploadResponse
+from backend.services.doc_converter import convert_to_pdf, is_convertible
 from backend.services.storage import (
     build_key,
     get_presigned_download_url,
@@ -80,13 +82,35 @@ async def upload_document(
 
     # Read file bytes
     file_bytes = await file.read()
-    filename = file.filename or "upload.txt"
+    original_filename = file.filename or "upload.txt"
+    original_content_type = file.content_type or "application/octet-stream"
+
+    # If the upload is a doc/pptx/etc., convert to PDF up front. From here
+    # on the pipeline (R2, text extraction, embedding) operates on the
+    # converted PDF — that's also what the signed-url endpoint will serve.
+    filename = original_filename
+    stored_content_type = original_content_type
+    if is_convertible(original_filename):
+        import asyncio as _asyncio
+        try:
+            file_bytes = await _asyncio.to_thread(
+                convert_to_pdf, file_bytes, original_filename
+            )
+        except Exception as exc:
+            logger.error("Conversion to PDF failed for %s: %s", original_filename, exc)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not convert '{original_filename}' to PDF: {exc}",
+            )
+        # Replace title/content-type so downstream treats this as a PDF.
+        filename = Path(original_filename).stem + ".pdf"
+        stored_content_type = "application/pdf"
 
     # Create the Document record (status = processing)
     doc = Document(
         dataset_id=dataset.id,
         title=filename,
-        content_type=file.content_type or "application/octet-stream",
+        content_type=stored_content_type,
         uploaded_by=user_id,
         visibility=visibility,
         status="processing",
@@ -94,7 +118,7 @@ async def upload_document(
     db.add(doc)
     db.commit()  # commit so FK exists for segments
 
-    # Persist the original file to R2 under the user's prefix.
+    # Persist the (possibly converted) PDF to R2 under the user's prefix.
     if settings.r2_bucket:
         storage_key = build_key(user_id, str(doc.id), filename)
         try:
