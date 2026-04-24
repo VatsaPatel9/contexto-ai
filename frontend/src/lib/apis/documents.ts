@@ -7,7 +7,7 @@
  *   DELETE /api/datasets/{courseId}/documents/{docId}  — Soft-delete a document
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 export type UploadedDocument = {
   id: string;

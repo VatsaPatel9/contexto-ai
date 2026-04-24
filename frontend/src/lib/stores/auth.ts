@@ -15,7 +15,7 @@ import {
   signOut as stSignOut,
 } from '$lib/auth/supertokens';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 export type AuthState = {
   initialized: boolean;

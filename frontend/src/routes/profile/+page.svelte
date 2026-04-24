@@ -6,7 +6,7 @@
   import { session } from '$lib/stores';
   import { listDocuments, deleteDocument, type UploadedDocument } from '$lib/apis/documents';
 
-  const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+  const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
   type MyProfile = {
     user_id: string;

@@ -17,7 +17,7 @@
  *   GET    /api/parameters              — Get UI config (opening statement, suggestions)
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 // ── Types ──────────────────────────────────────────────────────────────
 

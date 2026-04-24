@@ -10,7 +10,7 @@ import SuperTokens from 'supertokens-web-js';
 import Session from 'supertokens-web-js/recipe/session';
 import EmailPassword from 'supertokens-web-js/recipe/emailpassword';
 
-const API_DOMAIN = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+const API_DOMAIN = import.meta.env.VITE_API_BASE_URL;
 
 let initialized = false;
 

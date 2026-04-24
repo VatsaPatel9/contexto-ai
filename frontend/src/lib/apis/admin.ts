@@ -3,7 +3,7 @@
  * All endpoints require super_admin or admin role.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 // ── Types ──────────────────────────────────────────────────────────────
 
