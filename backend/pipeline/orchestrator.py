@@ -124,6 +124,70 @@ def _list_available_docs(db: Session, dataset_id) -> list[dict]:
     return out
 
 
+async def _generate_suggested_questions(
+    llm: LLMClient,
+    docs: list[dict],
+    limit: int = 3,
+) -> list[str]:
+    """Ask the LLM for *limit* student-sounding questions grounded in the
+    provided document previews. Returns [] on failure — caller is
+    expected to render the block only if the list is non-empty.
+    """
+    if not docs or not llm:
+        return []
+
+    doc_list = "\n".join(
+        f"- {d['title']}" + (f" — {d['preview']}" if d.get("preview") else "")
+        for d in docs[:10]
+    )
+    system = (
+        "You help a student discover what questions they can ask a course tutor. "
+        "Given a list of available documents (title + short excerpt), return a JSON "
+        "array of exactly " + str(limit) + " short, specific, student-friendly "
+        "questions that can be answered from those documents. Favor concrete terms "
+        "from the excerpts over generic phrasing. No preamble, no trailing text — "
+        "only the JSON array. Example: [\"What is encapsulation?\", \"How does DFS differ from BFS?\", \"When to use private attributes?\"]"
+    )
+    user = f"Available documents:\n{doc_list}\n\nReturn the JSON array now."
+
+    try:
+        raw = await llm.chat([
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ])
+    except Exception as exc:
+        logger.warning("Suggested-questions call failed: %s", exc)
+        return []
+
+    # Extract the JSON array — LLMs sometimes wrap it in ```json fences.
+    text = raw.strip()
+    if text.startswith("```"):
+        # strip opening fence
+        newline = text.find("\n")
+        if newline != -1:
+            text = text[newline + 1 :]
+        if text.endswith("```"):
+            text = text[: -3]
+        text = text.strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("Suggested-questions JSON parse failed: %r", raw[:200])
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    out: list[str] = []
+    for item in parsed:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip().rstrip("?") + "?")
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _persist_early_exit(
     db: Session,
     *,
@@ -449,6 +513,17 @@ async def process_chat_message(
                     "Ask me about any of these, or rephrase your question. "
                     "If you think this topic should be added, check with your instructor."
                 )
+                # Tack on a concrete-questions block so the student sees what
+                # they CAN ask. Separator + heading live above the questions
+                # so the UI Markdown renderer draws an <hr> and <h3>.
+                suggestions = await _generate_suggested_questions(llm, available_docs)
+                if suggestions:
+                    q_block = "\n".join(f"- {q}" for q in suggestions)
+                    no_context_msg += (
+                        "\n\n---\n\n"
+                        "### You can also ask\n\n"
+                        f"{q_block}"
+                    )
             else:
                 no_context_msg = (
                     "I don't see that topic in the uploaded course materials. "
