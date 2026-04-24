@@ -39,6 +39,9 @@ export type ChatMessage = {
     section?: string;
     score?: number;
   }> | null;
+  // Clickable follow-up questions the tutor suggests when it can't
+  // answer. Rendered as chips at the bottom of the assistant bubble.
+  suggestions?: string[] | null;
 };
 
 export type Conversation = {

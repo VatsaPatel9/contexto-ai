@@ -3,7 +3,13 @@
   import UserMessage from './Messages/UserMessage.svelte';
   import ResponseMessage from './Messages/ResponseMessage.svelte';
 
-  let { messages }: { messages: ChatMessage[] } = $props();
+  let {
+    messages,
+    onAskSuggestion,
+  }: {
+    messages: ChatMessage[];
+    onAskSuggestion?: (text: string) => void;
+  } = $props();
 </script>
 
 <div class="h-full flex">
@@ -14,7 +20,7 @@
           {#if message.role === 'user'}
             <UserMessage {message} />
           {:else}
-            <ResponseMessage {message} />
+            <ResponseMessage {message} {onAskSuggestion} />
           {/if}
         </div>
       {/each}

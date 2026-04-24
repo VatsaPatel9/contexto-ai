@@ -20,7 +20,7 @@
     type ApiMessage
   } from '$lib/apis/contexto';
   import { generateId, generateTitle, scrollToBottom } from '$lib/utils';
-  import { parseCitationsFence } from '$lib/utils/citations';
+  import { parseCitationsFence, parseSuggestionsFence } from '$lib/utils/citations';
 
   import Navbar from '$lib/components/layout/Navbar.svelte';
   import Messages from '$lib/components/chat/Messages.svelte';
@@ -119,21 +119,23 @@
   }
 
   function apiMessageToChat(msg: ApiMessage): ChatMessage {
-    // Stored assistant text may contain a `citations` fence. Strip it for
-    // display and prefer the parsed citations over the server's retriever
-    // metadata so badges reflect what the LLM actually cited.
-    const { display, citations } = parseCitationsFence(msg.content);
-    const enriched = citations
-      ? enrichWithDocIds(citations, msg.retriever_resources)
+    // Stored assistant text may contain a `citations` fence and/or a
+    // `suggestions` fence. Strip both for display; surface them as
+    // structured fields on the message instead.
+    const c = parseCitationsFence(msg.content);
+    const s = parseSuggestionsFence(c.display);
+    const enriched = c.citations
+      ? enrichWithDocIds(c.citations, msg.retriever_resources)
       : msg.retriever_resources;
     return {
       id: msg.id,
       role: msg.role,
-      content: display,
+      content: s.display,
       timestamp: msg.created_at * 1000,
       messageType: msg.message_type,
       done: true,
-      retrieverResources: enriched
+      retrieverResources: enriched,
+      suggestions: s.suggestions ?? null
     };
   }
 
@@ -168,14 +170,16 @@
 
       for await (const event of stream) {
         if (event.event === 'message' || event.event === 'agent_message') {
-          // Accumulate into _raw; derive visible `content` by stripping the
-          // citations fence (if it has started). While the fence is open
-          // but not yet closed, the region after it stays hidden — user
-          // never sees raw JSON.
+          // Accumulate into _raw; derive visible `content` by stripping
+          // both the `citations` and `suggestions` fences. While a
+          // fence is open but not yet closed, everything after it stays
+          // hidden — user never sees raw JSON.
           assistantMsg._raw = (assistantMsg._raw ?? '') + (event.answer ?? '');
-          const { display, citations } = parseCitationsFence(assistantMsg._raw);
-          assistantMsg.content = display;
-          if (citations) assistantMsg.retrieverResources = citations;
+          const c = parseCitationsFence(assistantMsg._raw);
+          const s = parseSuggestionsFence(c.display);
+          assistantMsg.content = s.display;
+          if (c.citations) assistantMsg.retrieverResources = c.citations;
+          if (s.suggestions) assistantMsg.suggestions = s.suggestions;
           if (event.message_id && assistantMsg.id !== event.message_id) {
             assistantMsg.id = event.message_id;
           }
@@ -268,7 +272,7 @@
       {#if messages.length === 0}
         <Placeholder onSuggestionClick={handleSuggestionClick} />
       {:else}
-        <Messages {messages} />
+        <Messages {messages} onAskSuggestion={handleSubmit} />
       {/if}
     </div>
 

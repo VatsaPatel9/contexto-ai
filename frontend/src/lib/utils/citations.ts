@@ -29,33 +29,57 @@ export type CitationsSplit = {
   pending: boolean;
 };
 
-const FENCE_OPEN = '```citations';
+const CITATIONS_FENCE_OPEN = '```citations';
+const SUGGESTIONS_FENCE_OPEN = '```suggestions';
 const FENCE_CLOSE = '```';
 
-export function parseCitationsFence(raw: string): CitationsSplit {
-  const openIdx = raw.indexOf(FENCE_OPEN);
+function splitFence<T>(
+  raw: string,
+  openTag: string,
+  coerce: (parsed: unknown) => T | undefined
+): { display: string; value?: T; pending: boolean } {
+  const openIdx = raw.indexOf(openTag);
   if (openIdx < 0) return { display: raw, pending: false };
 
-  const afterOpen = raw.slice(openIdx + FENCE_OPEN.length);
+  const afterOpen = raw.slice(openIdx + openTag.length);
   const closeIdx = afterOpen.indexOf(FENCE_CLOSE);
 
   if (closeIdx < 0) {
-    // Fence is open but not yet closed — still streaming.
     return { display: raw.slice(0, openIdx).trimEnd(), pending: true };
   }
 
   const jsonText = afterOpen.slice(0, closeIdx).trim();
-  let citations: ParsedCitation[] | undefined;
+  let value: T | undefined;
   try {
-    const parsed = JSON.parse(jsonText);
-    if (Array.isArray(parsed)) citations = parsed as ParsedCitation[];
+    value = coerce(JSON.parse(jsonText));
   } catch {
-    citations = undefined;
+    value = undefined;
   }
 
   const display =
     raw.slice(0, openIdx).trimEnd() +
     afterOpen.slice(closeIdx + FENCE_CLOSE.length);
 
-  return { display, citations, pending: false };
+  return { display, value, pending: false };
+}
+
+export function parseCitationsFence(raw: string): CitationsSplit {
+  const out = splitFence<ParsedCitation[]>(raw, CITATIONS_FENCE_OPEN, (p) =>
+    Array.isArray(p) ? (p as ParsedCitation[]) : undefined
+  );
+  return { display: out.display, citations: out.value, pending: out.pending };
+}
+
+export type SuggestionsSplit = {
+  display: string;
+  suggestions?: string[];
+  pending: boolean;
+};
+
+export function parseSuggestionsFence(raw: string): SuggestionsSplit {
+  const out = splitFence<string[]>(raw, SUGGESTIONS_FENCE_OPEN, (p) => {
+    if (!Array.isArray(p)) return undefined;
+    return p.filter((x): x is string => typeof x === 'string');
+  });
+  return { display: out.display, suggestions: out.value, pending: out.pending };
 }

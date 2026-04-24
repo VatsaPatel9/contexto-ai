@@ -513,16 +513,16 @@ async def process_chat_message(
                     "Ask me about any of these, or rephrase your question. "
                     "If you think this topic should be added, check with your instructor."
                 )
-                # Tack on a concrete-questions block so the student sees what
-                # they CAN ask. Separator + heading live above the questions
-                # so the UI Markdown renderer draws an <hr> and <h3>.
+                # Concrete-questions block. Emitted as a machine-parsed
+                # `suggestions` fence (same pattern as the citations fence)
+                # so the frontend can render them as clickable chips that
+                # submit the question when tapped.
                 suggestions = await _generate_suggested_questions(llm, available_docs)
                 if suggestions:
-                    q_block = "\n".join(f"- {q}" for q in suggestions)
                     no_context_msg += (
-                        "\n\n---\n\n"
-                        "### You can also ask\n\n"
-                        f"{q_block}"
+                        "\n\n```suggestions\n"
+                        + json.dumps(suggestions)
+                        + "\n```"
                     )
             else:
                 no_context_msg = (

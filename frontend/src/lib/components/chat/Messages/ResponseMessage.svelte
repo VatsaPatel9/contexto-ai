@@ -6,7 +6,13 @@
   import { toast } from 'svelte-sonner';
   import Markdown from './Markdown.svelte';
 
-  let { message }: { message: ChatMessage } = $props();
+  let {
+    message,
+    onAskSuggestion,
+  }: {
+    message: ChatMessage;
+    onAskSuggestion?: (text: string) => void;
+  } = $props();
 
   let copied = $state(false);
   let feedbackState = $derived(message.feedback ?? null) as 'like' | 'dislike' | null;
@@ -80,6 +86,32 @@
       <div class="chat-assistant-message w-full">
         <Markdown content={message.content} />
       </div>
+
+      <!-- Suggested follow-up questions (chips) — submits on click -->
+      {#if message.done && message.suggestions && message.suggestions.length > 0}
+        <div class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+          <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+            You can also ask
+          </div>
+          <div class="flex flex-wrap gap-2">
+            {#each message.suggestions as q}
+              <button
+                type="button"
+                onclick={() => onAskSuggestion?.(q)}
+                class="text-sm px-3 py-1.5 rounded-full
+                       bg-gray-50 hover:bg-blue-50 dark:bg-gray-800 dark:hover:bg-blue-900/30
+                       text-gray-700 hover:text-blue-700 dark:text-gray-200 dark:hover:text-blue-300
+                       border border-gray-200 dark:border-gray-700
+                       hover:border-blue-300 dark:hover:border-blue-600
+                       transition"
+                title="Ask this question"
+              >
+                {q}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       <!-- Sources (above action bar) — clickable when doc_id is known -->
       {#if message.done && uniqueCitations.length > 0}
