@@ -4,7 +4,12 @@
   import { toast } from 'svelte-sonner';
   import { authStore, getDisplayLabel } from '$lib/stores/auth';
   import { session } from '$lib/stores';
-  import { listDocuments, deleteDocument, type UploadedDocument } from '$lib/apis/documents';
+  import {
+    listDocuments,
+    deleteDocument,
+    getDocumentSignedUrl,
+    type UploadedDocument
+  } from '$lib/apis/documents';
 
   const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
@@ -55,6 +60,36 @@
       toast.success(`"${title}" deleted`);
     } catch (e: any) {
       toast.error(e.message);
+    }
+  }
+
+  async function handleViewDocument(docId: string) {
+    try {
+      const { download_url } = await getDocumentSignedUrl(docId);
+      window.open(download_url, '_blank', 'noopener,noreferrer');
+    } catch (e: any) {
+      toast.error(e.message || 'Unable to open document');
+    }
+  }
+
+  // Fetch the object cross-origin (R2 CORS allows it) so the browser
+  // triggers a real download instead of navigating to the signed URL.
+  async function handleDownloadDocument(docId: string, title: string) {
+    try {
+      const { download_url } = await getDocumentSignedUrl(docId);
+      const res = await fetch(download_url);
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = title;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast.error(e.message || 'Download failed');
     }
   }
 
@@ -235,20 +270,53 @@
                         </span>
                       </div>
                     </div>
-                    {#if doc.visibility === 'private' || $authStore.roles.includes('admin') || $authStore.roles.includes('super_admin')}
+                    <div class="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
+                      <!-- View (open in a new tab) -->
                       <button
-                        onclick={() => handleDeleteDocument(doc.id, doc.title)}
-                        class="shrink-0 p-1.5 rounded-lg opacity-0 group-hover:opacity-100
-                               hover:bg-red-50 dark:hover:bg-red-900/20
-                               text-gray-400 hover:text-red-500 transition"
-                        title="Delete document"
+                        onclick={() => handleViewDocument(doc.id)}
+                        class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
+                               text-gray-400 hover:text-blue-600 transition"
+                        title="Open in a new tab"
+                        aria-label="View document"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                          <circle cx="12" cy="12" r="3" />
                         </svg>
                       </button>
-                    {/if}
+
+                      <!-- Download -->
+                      <button
+                        onclick={() => handleDownloadDocument(doc.id, doc.title)}
+                        class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
+                               text-gray-400 hover:text-blue-600 transition"
+                        title="Download"
+                        aria-label="Download document"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                      </button>
+
+                      {#if doc.visibility === 'private' || $authStore.roles.includes('admin') || $authStore.roles.includes('super_admin')}
+                        <!-- Delete -->
+                        <button
+                          onclick={() => handleDeleteDocument(doc.id, doc.title)}
+                          class="p-1.5 rounded-lg
+                                 hover:bg-red-50 dark:hover:bg-red-900/20
+                                 text-gray-400 hover:text-red-500 transition"
+                          title="Delete document"
+                          aria-label="Delete document"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                        </button>
+                      {/if}
+                    </div>
                   </div>
                 {/each}
               </div>
