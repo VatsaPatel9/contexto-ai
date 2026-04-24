@@ -99,10 +99,22 @@
   });
 </script>
 
+<script lang="ts" module>
+  // Paths that should render the app chrome-free (no sidebar, no
+  // navbar, etc.) even for authenticated users. Keeps signup and
+  // the email-verification flow looking like a real auth page.
+  const CHROMELESS_PREFIXES = ['/login', '/auth/'];
+</script>
+
 {#if ready}
   <Toaster richColors position="top-right" />
 
-  {#if $authStore.authenticated}
+  {@const pathname = $page.url.pathname}
+  {@const chromeless = CHROMELESS_PREFIXES.some((p) =>
+    p.endsWith('/') ? pathname.startsWith(p) : pathname === p
+  )}
+
+  {#if $authStore.authenticated && !chromeless}
     <div class="app relative text-gray-700 dark:text-gray-100 bg-white dark:bg-gray-900
                 h-screen max-h-[100dvh] overflow-auto flex flex-row">
       <Sidebar />

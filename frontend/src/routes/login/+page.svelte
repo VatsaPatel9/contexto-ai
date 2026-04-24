@@ -36,18 +36,23 @@
       if (mode === 'login') {
         await login(email, password);
       } else {
+        // Backend's sign_up_post override fires the verification email
+        // automatically as part of this call — the frontend doesn't
+        // need to kick it off.
         await register(email, password, displayName.trim());
       }
 
-      // After signup OR login, if the email hasn't been verified yet
-      // the backend will 403 every request — route the user to the
-      // "check your inbox" page instead of the main app to avoid a
-      // broken chat-UI-but-everything-errors experience.
+      // If the email is verified, land in the app. If not, the backend
+      // will 403 every request — route to /auth/verify-email instead
+      // so the user sees a real "check your inbox" page, not a broken
+      // chat UI.
       const verified = await isEmailVerified();
       if (verified) {
         goto('/');
       } else {
-        goto('/auth/verify-email');
+        // ?sent=1 tells the verify-email page "email already went out,
+        // show the inbox-check state and rate-limit the Resend button".
+        goto('/auth/verify-email?sent=1');
       }
     } catch (e: any) {
       error = e.message || 'Authentication failed';

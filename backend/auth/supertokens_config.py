@@ -206,6 +206,25 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
                 except Exception:
                     pass  # Non-fatal — user can set name later from profile
 
+            # Fire the verification email as part of the signup response
+            # so every /signup call ships a link — the way a professional
+            # signup API is expected to behave. Errors are swallowed so an
+            # SMTP misconfig can't block the account creation; the user can
+            # hit Resend from the /verify-email page as a fallback.
+            try:
+                from supertokens_python.recipe.emailverification.asyncio import (
+                    send_email_verification_email,
+                )
+                recipe_user_id = result.user.login_methods[0].recipe_user_id
+                await send_email_verification_email(
+                    tenant_id,
+                    result.user.id,
+                    recipe_user_id,
+                    email,
+                )
+            except Exception:
+                pass
+
         return result
 
     original.sign_up_post = sign_up_post
