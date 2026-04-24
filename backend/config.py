@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 200
-    rag_top_k: int = 5
-    rag_score_threshold: float = 0.45
+    rag_top_k: int = 8
+    rag_score_threshold: float = 0.30
     course_name: str = "the uploaded course materials"
     enable_humanizer: bool = False
     cors_allow_origins: str = "*"
