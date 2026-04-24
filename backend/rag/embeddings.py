@@ -14,7 +14,7 @@ class OpenAIEmbeddings:
 
     BATCH_SIZE = 100  # max texts per API call (conservative limit)
 
-    def __init__(self, api_key: str, model: str = "text-embedding-ada-002") -> None:
+    def __init__(self, api_key: str, model: str = "text-embedding-3-small") -> None:
         self.model = model
         self._client = openai.OpenAI(api_key=api_key)
 

@@ -9,12 +9,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://tutor_dev@localhost:5432/tutor_dev"
     openai_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
-    embedding_model: str = "text-embedding-ada-002"
+    embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 200
     rag_top_k: int = 5
-    rag_score_threshold: float = 0.75
+    rag_score_threshold: float = 0.82
     course_name: str = "the uploaded course materials"
     enable_humanizer: bool = False
     cors_allow_origins: str = "*"
