@@ -9,6 +9,7 @@
 import SuperTokens from 'supertokens-web-js';
 import Session from 'supertokens-web-js/recipe/session';
 import EmailPassword from 'supertokens-web-js/recipe/emailpassword';
+import EmailVerification from 'supertokens-web-js/recipe/emailverification';
 
 const API_DOMAIN = import.meta.env.VITE_API_BASE_URL;
 
@@ -26,10 +27,46 @@ export function initSuperTokens() {
     recipeList: [
       Session.init(),
       EmailPassword.init(),
+      EmailVerification.init(),
     ],
   });
 
   initialized = true;
+}
+
+// ── Email verification ────────────────────────────────────────────────
+
+/** Whether the current session's email has been verified. */
+export async function isEmailVerified(): Promise<boolean> {
+  if (!(await Session.doesSessionExist())) return false;
+  const res = await EmailVerification.isEmailVerified();
+  return res.isVerified;
+}
+
+/** Ask the backend to (re)send a verification email to the signed-in user. */
+export async function sendEmailVerification(): Promise<'OK' | 'ALREADY_VERIFIED' | 'ERROR'> {
+  if (!(await Session.doesSessionExist())) return 'ERROR';
+  const res = await EmailVerification.sendVerificationEmail();
+  if (res.status === 'OK') return 'OK';
+  if (res.status === 'EMAIL_ALREADY_VERIFIED_ERROR') return 'ALREADY_VERIFIED';
+  return 'ERROR';
+}
+
+/**
+ * Called from the /auth/verify-email landing page after the user clicks
+ * the link in their inbox. Reads the token from the URL and submits it.
+ */
+export async function verifyEmailFromToken(): Promise<
+  'OK' | 'INVALID_TOKEN' | 'ERROR'
+> {
+  try {
+    const res = await EmailVerification.verifyEmail();
+    if (res.status === 'OK') return 'OK';
+    if (res.status === 'EMAIL_VERIFICATION_INVALID_TOKEN_ERROR') return 'INVALID_TOKEN';
+    return 'ERROR';
+  } catch {
+    return 'ERROR';
+  }
 }
 
 // ── Auth helpers ──────────────────────────────────────────────────────

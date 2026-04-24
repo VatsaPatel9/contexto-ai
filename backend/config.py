@@ -35,6 +35,21 @@ class Settings(BaseSettings):
     restrict_email_domain: bool = True
     allowed_email_domain: str = "psu.edu"
 
+    # SMTP for transactional email (verification links, password resets).
+    # Recommended: Gmail with an App Password — see README / setup notes.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""   # defaults to smtp_username if empty
+    smtp_from_name: str = "Contexto"
+
+    # Email verification: when True, new signups must click a link in
+    # the verification email before their session is considered valid.
+    # Requires the SMTP_* vars above to be set, otherwise emails won't
+    # send and users will be locked out. Flip to False in dev/test.
+    email_verification_required: bool = True
+
     # Cloudflare R2 object storage
     r2_account_id: str = ""
     r2_access_key_id: str = ""

@@ -3,15 +3,47 @@
 from __future__ import annotations
 
 from supertokens_python import InputAppInfo, SupertokensConfig, init
-from supertokens_python.recipe import dashboard, emailpassword, session, userroles
+from supertokens_python.ingredients.emaildelivery.types import (
+    EmailDeliveryConfig,
+    SMTPSettings,
+    SMTPSettingsFrom,
+)
+from supertokens_python.recipe import (
+    dashboard,
+    emailpassword,
+    emailverification,
+    session,
+    userroles,
+)
+from supertokens_python.recipe.emailpassword.emaildelivery.services.smtp import (
+    SMTPService as EmailPasswordSMTPService,
+)
 from supertokens_python.recipe.emailpassword.interfaces import (
     APIInterface as EmailPasswordAPIInterface,
     APIOptions as EmailPasswordAPIOptions,
     SignUpPostOkResult,
 )
 from supertokens_python.recipe.emailpassword.types import FormField, InputFormField
+from supertokens_python.recipe.emailverification.emaildelivery.services.smtp import (
+    SMTPService as EmailVerificationSMTPService,
+)
 
 from backend.config import Settings
+
+
+def _build_smtp_settings(settings: Settings) -> SMTPSettings | None:
+    if not settings.smtp_username or not settings.smtp_password:
+        return None
+    return SMTPSettings(
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        from_=SMTPSettingsFrom(
+            name=settings.smtp_from_name,
+            email=settings.smtp_from_email or settings.smtp_username,
+        ),
+        password=settings.smtp_password,
+        secure=False,  # port 587 uses STARTTLS, not implicit TLS
+    )
 
 
 def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPIInterface):
@@ -83,7 +115,41 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
 
 
 def init_supertokens(settings: Settings) -> None:
-    """Initialise SuperTokens SDK with EmailPassword + Session + UserRoles."""
+    """Initialise SuperTokens SDK with EmailPassword + Session + UserRoles + EmailVerification."""
+    smtp_settings = _build_smtp_settings(settings)
+
+    ep_email_delivery = (
+        EmailDeliveryConfig(service=EmailPasswordSMTPService(smtp_settings=smtp_settings))
+        if smtp_settings
+        else None
+    )
+    ev_email_delivery = (
+        EmailDeliveryConfig(service=EmailVerificationSMTPService(smtp_settings=smtp_settings))
+        if smtp_settings
+        else None
+    )
+
+    recipe_list = [
+        emailpassword.init(
+            sign_up_feature=emailpassword.InputSignUpFeature(
+                form_fields=[
+                    InputFormField(id="display_name", optional=True),
+                ],
+            ),
+            override=emailpassword.InputOverrideConfig(
+                apis=lambda orig: _override_emailpassword_apis(settings, orig),
+            ),
+            email_delivery=ep_email_delivery,
+        ),
+        session.init(),
+        emailverification.init(
+            mode="REQUIRED" if settings.email_verification_required else "OPTIONAL",
+            email_delivery=ev_email_delivery,
+        ),
+        userroles.init(),
+        dashboard.init(),
+    ]
+
     init(
         app_info=InputAppInfo(
             app_name="Contexto",
@@ -97,19 +163,5 @@ def init_supertokens(settings: Settings) -> None:
             api_key=settings.supertokens_api_key or None,
         ),
         framework="fastapi",
-        recipe_list=[
-            emailpassword.init(
-                sign_up_feature=emailpassword.InputSignUpFeature(
-                    form_fields=[
-                        InputFormField(id="display_name", optional=True),
-                    ],
-                ),
-                override=emailpassword.InputOverrideConfig(
-                    apis=lambda orig: _override_emailpassword_apis(settings, orig),
-                ),
-            ),
-            session.init(),
-            userroles.init(),
-            dashboard.init(),
-        ],
+        recipe_list=recipe_list,
     )
