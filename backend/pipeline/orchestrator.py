@@ -603,7 +603,9 @@ IMPORTANT — THIS IS A HOMEWORK QUESTION. Follow this EXACT response structure:
 
 5. **Encouragement + Socratic question**: Use growth-mindset language ("You are making progress"). End with a specific question: "Which part seems most confusing?" or "What would you try next?"
 
-6. **Citations fence**: End with a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
+6. **Citations fence**: Emit a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
+
+7. **Quiz fence (MANDATORY, never skip, never leave open-ended)**: After the citations fence, emit a ```quiz``` JSON fence per Rule 8. Must be `kind: "mcq"` (4 concrete options + answer index) or `kind: "tf"` (boolean answer). Open-ended follow-up prompts in the response prose do NOT satisfy this rule — the fenced block is required so the UI can render clickable buttons.
 
 NEVER give the final answer, result, or solution. If you catch yourself about to state the answer, STOP and convert it into a question.
 """
@@ -625,7 +627,9 @@ THIS IS A CONCEPTUAL QUESTION. Follow this EXACT response structure:
 
 5. **Follow-up**: End with a specific Socratic question to check understanding or deepen learning: "Which of these differences seems most confusing right now?" or "Can you explain back to me how X works?"
 
-6. **Citations fence**: End with a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
+6. **Citations fence**: Emit a ```citations``` JSON fence per Rule 7 (see system prompt). No inline `[Source: ...]` markers.
+
+7. **Quiz fence (MANDATORY, never skip, never leave open-ended)**: After the citations fence, emit a ```quiz``` JSON fence per Rule 8. Must be `kind: "mcq"` (4 concrete options + answer index) or `kind: "tf"` (boolean answer). The Socratic "Which of these is most confusing?" prose question does NOT satisfy this — the quiz fence is a separate, required structured block the UI renders as clickable buttons.
 
 Do NOT give a flat paragraph explanation. Always use structured bullets + analogy + question.
 """
