@@ -55,6 +55,14 @@
     return text.replace(/(?<!\n)(\s)(\d+\.\s+\*\*)/g, '\n\n$2');
   }
 
+  // Same fix for dash bullets: the LLM often emits
+  //   "... compartmentalizing functionality. - **Modularity**: Enhances..."
+  // which marked renders as one paragraph with bold spans. Break each
+  // " - **…**" into its own line so it parses as a proper list item.
+  function fixBulletLists(text: string): string {
+    return text.replace(/(?<!\n)(\s)-\s+\*\*/g, '\n- **');
+  }
+
   // Process KaTeX math (inline $...$ and display $$...$$)
   function preprocessMath(text: string): string {
     // Display math: $$...$$
@@ -72,6 +80,7 @@
     codeBlocks.length = 0;
     let processed = stripCitations(content);
     processed = fixNumberedLists(processed);
+    processed = fixBulletLists(processed);
     processed = preprocessMath(processed);
     const raw = marked.parse(processed) as string;
     htmlContent = DOMPurify.sanitize(raw, {
