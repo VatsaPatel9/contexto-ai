@@ -20,7 +20,11 @@
     type ApiMessage
   } from '$lib/apis/contexto';
   import { generateId, generateTitle, scrollToBottom } from '$lib/utils';
-  import { parseCitationsFence, parseSuggestionsFence } from '$lib/utils/citations';
+  import {
+    parseCitationsFence,
+    parseSuggestionsFence,
+    parseQuizFence,
+  } from '$lib/utils/citations';
 
   import Navbar from '$lib/components/layout/Navbar.svelte';
   import Messages from '$lib/components/chat/Messages.svelte';
@@ -137,23 +141,25 @@
   }
 
   function apiMessageToChat(msg: ApiMessage): ChatMessage {
-    // Stored assistant text may contain a `citations` fence and/or a
-    // `suggestions` fence. Strip both for display; surface them as
-    // structured fields on the message instead.
+    // Stored assistant text may carry three fences: citations,
+    // suggestions, and quiz. Strip all three for display; surface
+    // them as structured fields on the message.
     const c = parseCitationsFence(msg.content);
     const s = parseSuggestionsFence(c.display);
+    const q = parseQuizFence(s.display);
     const enriched = c.citations
       ? enrichWithDocIds(c.citations, msg.retriever_resources)
       : msg.retriever_resources;
     return {
       id: msg.id,
       role: msg.role,
-      content: s.display,
+      content: q.display,
       timestamp: msg.created_at * 1000,
       messageType: msg.message_type,
       done: true,
       retrieverResources: enriched,
       suggestions: s.suggestions ?? null,
+      quiz: q.quiz ?? null,
       feedback: msg.feedback ?? null
     };
   }
@@ -196,9 +202,11 @@
           assistantMsg._raw = (assistantMsg._raw ?? '') + (event.answer ?? '');
           const c = parseCitationsFence(assistantMsg._raw);
           const s = parseSuggestionsFence(c.display);
-          assistantMsg.content = s.display;
+          const q = parseQuizFence(s.display);
+          assistantMsg.content = q.display;
           if (c.citations) assistantMsg.retrieverResources = c.citations;
           if (s.suggestions) assistantMsg.suggestions = s.suggestions;
+          if (q.quiz) assistantMsg.quiz = q.quiz;
           if (event.message_id && assistantMsg.id !== event.message_id) {
             assistantMsg.id = event.message_id;
           }

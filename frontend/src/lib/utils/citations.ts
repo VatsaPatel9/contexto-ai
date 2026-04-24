@@ -83,3 +83,61 @@ export function parseSuggestionsFence(raw: string): SuggestionsSplit {
   });
   return { display: out.display, suggestions: out.value, pending: out.pending };
 }
+
+export type Quiz =
+  | {
+      kind: 'mcq';
+      question: string;
+      options: string[];
+      answer: number; // 0..options.length-1
+      explanation?: string;
+    }
+  | {
+      kind: 'tf';
+      question: string;
+      answer: boolean;
+      explanation?: string;
+    };
+
+export type QuizSplit = {
+  display: string;
+  quiz?: Quiz;
+  pending: boolean;
+};
+
+const QUIZ_FENCE_OPEN = '```quiz';
+
+export function parseQuizFence(raw: string): QuizSplit {
+  const out = splitFence<Quiz>(raw, QUIZ_FENCE_OPEN, (p) => {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return undefined;
+    const obj = p as Record<string, unknown>;
+    const kind = obj.kind;
+    const question = obj.question;
+    if (typeof question !== 'string' || !question.trim()) return undefined;
+    if (kind === 'mcq') {
+      const options = obj.options;
+      const answer = obj.answer;
+      if (!Array.isArray(options) || options.length < 2) return undefined;
+      if (!options.every((o) => typeof o === 'string')) return undefined;
+      if (typeof answer !== 'number' || answer < 0 || answer >= options.length) return undefined;
+      return {
+        kind: 'mcq',
+        question,
+        options: options as string[],
+        answer,
+        explanation: typeof obj.explanation === 'string' ? obj.explanation : undefined,
+      };
+    }
+    if (kind === 'tf') {
+      if (typeof obj.answer !== 'boolean') return undefined;
+      return {
+        kind: 'tf',
+        question,
+        answer: obj.answer,
+        explanation: typeof obj.explanation === 'string' ? obj.explanation : undefined,
+      };
+    }
+    return undefined;
+  });
+  return { display: out.display, quiz: out.value, pending: out.pending };
+}

@@ -5,6 +5,7 @@
   import { submitFeedback } from '$lib/apis/contexto';
   import { toast } from 'svelte-sonner';
   import Markdown from './Markdown.svelte';
+  import QuizBlock from './QuizBlock.svelte';
 
   let {
     message,
@@ -86,6 +87,11 @@
       <div class="chat-assistant-message w-full">
         <Markdown content={message.content} />
       </div>
+
+      <!-- Interactive comprehension check -->
+      {#if message.done && message.quiz}
+        <QuizBlock quiz={message.quiz} />
+      {/if}
 
       <!-- Suggested follow-up questions (chips) — submits on click -->
       {#if message.done && message.suggestions && message.suggestions.length > 0}

@@ -42,6 +42,10 @@ export type ChatMessage = {
   // Clickable follow-up questions the tutor suggests when it can't
   // answer. Rendered as chips at the bottom of the assistant bubble.
   suggestions?: string[] | null;
+  // Interactive comprehension check the tutor attached to the answer.
+  // Resolved locally — the user picks and the component reveals the
+  // correct answer + explanation. No round-trip needed.
+  quiz?: import('$lib/utils/citations').Quiz | null;
 };
 
 export type Conversation = {
