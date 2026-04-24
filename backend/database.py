@@ -40,6 +40,26 @@ def init_db() -> None:
     # Ensure new columns exist on pre-existing tables (lightweight migration)
     _add_column_if_missing(engine, "user_profiles", "display_name", "VARCHAR(255)")
     _add_column_if_missing(engine, "documents", "deleted_at", "TIMESTAMPTZ")
+    _add_column_if_missing(engine, "datasets", "course_id", "VARCHAR(255)")
+    _add_column_if_missing(engine, "messages", "feedback", "VARCHAR(20)")
+
+    # Backfill: copy any feedback that was previously stashed inside
+    # messages.retrieval_sources -> 'feedback' -> 'rating' into the new
+    # dedicated column. Safe to run every startup (only updates rows
+    # that still have the legacy shape and no value in the new column).
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE messages
+                SET feedback = retrieval_sources->'feedback'->>'rating'
+                WHERE feedback IS NULL
+                  AND retrieval_sources ? 'feedback'
+                  AND retrieval_sources->'feedback'->>'rating' IN ('like', 'dislike')
+                """
+            )
+        )
+        conn.commit()
 
 
 def _add_column_if_missing(eng, table: str, column: str, col_type: str) -> None:

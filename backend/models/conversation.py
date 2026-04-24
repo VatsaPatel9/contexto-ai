@@ -64,6 +64,10 @@ class Message(Base):
     message_type = Column(String(50), nullable=True)
     has_attempt = Column(Boolean, nullable=False, default=False)
     retrieval_sources = Column(JSONB, nullable=True)
+    # Thumb feedback — 'like' / 'dislike' / NULL. Previously piggybacked
+    # on retrieval_sources; now a dedicated column so list-messages can
+    # echo it back and the UI re-shows the selected thumb on reload.
+    feedback = Column(String(20), nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

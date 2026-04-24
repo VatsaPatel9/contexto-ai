@@ -153,7 +153,8 @@
       messageType: msg.message_type,
       done: true,
       retrieverResources: enriched,
-      suggestions: s.suggestions ?? null
+      suggestions: s.suggestions ?? null,
+      feedback: msg.feedback ?? null
     };
   }
 

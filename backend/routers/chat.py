@@ -243,12 +243,32 @@ def list_messages(
                 content=m.content,
                 message_type=m.message_type,
                 created_at=_ts(m.created_at),
-                retriever_resources=m.retrieval_sources,
+                retriever_resources=_coerce_retriever_resources(m.retrieval_sources),
+                feedback=m.feedback,
             )
             for m in messages
         ],
         has_more=total > limit,
     )
+
+
+def _coerce_retriever_resources(raw) -> list[dict] | None:
+    """Return the citation list, tolerating legacy shapes.
+
+    Historically this column held a plain list of citation dicts.
+    Some older rows instead hold an object: {retriever_resources: [...], feedback: {...}}
+    from when feedback was stashed alongside the list. Surface only the
+    list portion; drop the legacy 'feedback' key (now in its own column).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        inner = raw.get("retriever_resources")
+        if isinstance(inner, list):
+            return inner
+    return None
 
 
 # ------------------------------------------------------------------
@@ -262,23 +282,22 @@ def submit_feedback(
     session: SessionContainer = Depends(require_auth()),
     db: DBSession = Depends(get_db),
 ):
-    """Store a like/dislike rating on a message."""
-    user_id = session.get_user_id()
+    """Store a like/dislike rating on a message (upsert — last value wins)."""
+    user_id = session.get_user_id()  # kept for future audit trail, not stored
     try:
         msg_uuid = uuid.UUID(message_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid message ID")
 
+    rating = (body.rating or "").lower()
+    if rating not in ("like", "dislike"):
+        raise HTTPException(status_code=400, detail="rating must be 'like' or 'dislike'")
+
     msg = db.query(Message).filter(Message.id == msg_uuid).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    # Store feedback in the retrieval_sources JSONB field under a "feedback" key
-    sources = msg.retrieval_sources or {}
-    if isinstance(sources, list):
-        sources = {"retriever_resources": sources}
-    sources["feedback"] = {"rating": body.rating, "user": user_id}
-    msg.retrieval_sources = sources
+    msg.feedback = rating
     db.commit()
 
-    return {"result": "success"}
+    return {"result": "success", "feedback": rating}

@@ -36,6 +36,7 @@ class MessageResponse(BaseModel):
     message_type: Optional[str] = None
     created_at: int
     retriever_resources: Optional[list[dict]] = None
+    feedback: Optional[str] = None  # 'like' | 'dislike' | None
 
 
 class MessageListResponse(BaseModel):

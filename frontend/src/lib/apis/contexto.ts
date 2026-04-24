@@ -62,6 +62,7 @@ export type ApiMessage = {
   message_type: string | null;
   created_at: number;
   retriever_resources: RetrieverResource[] | null;
+  feedback?: 'like' | 'dislike' | null;
 };
 
 export type MessageListResponse = {
