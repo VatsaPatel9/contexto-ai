@@ -10,6 +10,7 @@ import SuperTokens from 'supertokens-web-js';
 import Session from 'supertokens-web-js/recipe/session';
 import EmailPassword from 'supertokens-web-js/recipe/emailpassword';
 import EmailVerification from 'supertokens-web-js/recipe/emailverification';
+import STGeneralError from 'supertokens-web-js/utils/error';
 
 const API_DOMAIN = import.meta.env.VITE_API_BASE_URL;
 
@@ -26,7 +27,18 @@ export function initSuperTokens() {
     },
     recipeList: [
       Session.init(),
-      EmailPassword.init(),
+      EmailPassword.init({
+        // Same single-tenant pin as EmailVerification (see comment on
+        // that recipe). A stale or hand-mangled reset link that carries
+        // a non-'public' tenantId would otherwise route to a missing
+        // tenant path on the core and fail with an opaque error.
+        override: {
+          functions: (orig) => ({
+            ...orig,
+            getTenantIdFromURL: () => 'public',
+          }),
+        },
+      }),
       EmailVerification.init({
         // Single-tenant app: force the web-js SDK to always use the
         // 'public' tenant regardless of what's in the URL query
@@ -65,20 +77,22 @@ export type SendVerificationResult =
 
 export async function sendEmailVerification(): Promise<SendVerificationResult> {
   if (!(await Session.doesSessionExist())) return { kind: 'error' };
-  // The SDK types this response as OK | EMAIL_ALREADY_VERIFIED_ERROR, but
-  // the SuperTokens backend can also return a GeneralErrorResponse with a
-  // status of 'GENERAL_ERROR' (e.g. our rate-limit override). Cast so we
-  // can check that branch without TypeScript narrowing it away.
-  const res = (await EmailVerification.sendVerificationEmail()) as unknown as {
-    status: string;
-    message?: string;
-  };
-  if (res.status === 'OK') return { kind: 'ok' };
-  if (res.status === 'EMAIL_ALREADY_VERIFIED_ERROR') return { kind: 'already_verified' };
-  if (res.status === 'GENERAL_ERROR') {
-    return { kind: 'rate_limited', message: res.message ?? 'Too many requests.' };
+  // Our backend rate-limit override returns a GeneralErrorResponse. The
+  // web-js querier intercepts status=GENERAL_ERROR responses and throws
+  // STGeneralError with the server's message — the response never
+  // reaches us as an OK-shaped object. Catch it here to surface the
+  // rate-limit message to the user.
+  try {
+    const res = await EmailVerification.sendVerificationEmail();
+    if (res.status === 'OK') return { kind: 'ok' };
+    if (res.status === 'EMAIL_ALREADY_VERIFIED_ERROR') return { kind: 'already_verified' };
+    return { kind: 'error' };
+  } catch (err) {
+    if (err instanceof STGeneralError) {
+      return { kind: 'rate_limited', message: err.message || 'Too many requests.' };
+    }
+    return { kind: 'error' };
   }
-  return { kind: 'error' };
 }
 
 /**
@@ -95,6 +109,79 @@ export async function verifyEmailFromToken(): Promise<
     return 'ERROR';
   } catch {
     return 'ERROR';
+  }
+}
+
+// ── Password reset ────────────────────────────────────────────────────
+
+export type SendResetResult =
+  | { kind: 'ok' }
+  | { kind: 'rate_limited'; message: string }
+  | { kind: 'field_error'; message: string }
+  | { kind: 'error' };
+
+/**
+ * Fire a password-reset email to the given address.
+ *
+ * The backend always responds OK for unknown emails (enumeration
+ * defense) so the UI cannot distinguish "sent" from "no such
+ * account" — always show the same "if an account exists…" message.
+ */
+export async function sendPasswordResetEmail(email: string): Promise<SendResetResult> {
+  // The backend's rate-limit override returns GeneralErrorResponse. The
+  // web-js querier intercepts that and throws STGeneralError — it never
+  // arrives as a response object. Catch it so the user sees the
+  // rate-limit message instead of a generic "couldn't send".
+  try {
+    const res = await EmailPassword.sendPasswordResetEmail({
+      formFields: [{ id: 'email', value: email }],
+    });
+    if (res.status === 'OK') return { kind: 'ok' };
+    if (res.status === 'FIELD_ERROR') {
+      return {
+        kind: 'field_error',
+        message: res.formFields.map((f) => f.error).join(', ') || 'Invalid email',
+      };
+    }
+    return { kind: 'error' };
+  } catch (err) {
+    if (err instanceof STGeneralError) {
+      return { kind: 'rate_limited', message: err.message || 'Too many requests.' };
+    }
+    return { kind: 'error' };
+  }
+}
+
+export type SubmitNewPasswordResult =
+  | { kind: 'ok' }
+  | { kind: 'invalid_token' }
+  | { kind: 'field_error'; message: string }
+  | { kind: 'error' };
+
+/**
+ * Submit a new password using the token in the current URL's `?token=…`.
+ * The web-js SDK reads the token from the URL automatically.
+ */
+export async function submitNewPassword(newPassword: string): Promise<SubmitNewPasswordResult> {
+  try {
+    const res = await EmailPassword.submitNewPassword({
+      formFields: [{ id: 'password', value: newPassword }],
+    });
+    if (res.status === 'OK') return { kind: 'ok' };
+    if (res.status === 'RESET_PASSWORD_INVALID_TOKEN_ERROR') return { kind: 'invalid_token' };
+    if (res.status === 'FIELD_ERROR') {
+      return {
+        kind: 'field_error',
+        message:
+          res.formFields.map((f) => f.error).join(', ') || 'Password does not meet requirements',
+      };
+    }
+    return { kind: 'error' };
+  } catch (err) {
+    if (err instanceof STGeneralError) {
+      return { kind: 'field_error', message: err.message };
+    }
+    return { kind: 'error' };
   }
 }
 

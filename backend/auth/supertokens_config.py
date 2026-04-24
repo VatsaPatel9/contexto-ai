@@ -145,9 +145,93 @@ def _build_smtp_settings(settings: Settings) -> SMTPSettings | None:
 
 
 def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPIInterface):
-    """Override signup to optionally gate email domain and capture display_name."""
+    """Override signup to optionally gate email domain and capture display_name,
+    and rate-limit the forgot-password endpoint the same way email verification
+    resends are rate-limited."""
 
     original_sign_up_post = original.sign_up_post
+    original_generate_reset_token_post = original.generate_password_reset_token_post
+
+    async def generate_password_reset_token_post(
+        form_fields: list[FormField],
+        tenant_id: str,
+        api_options: EmailPasswordAPIOptions = None,
+        user_context=None,
+    ):
+        """Rate-limit to RESEND_MAX_ATTEMPTS per RESEND_WINDOW_HOURS per user.
+
+        The endpoint is unauthenticated so we can't key on session. Instead
+        we look the email up against EmailPassword users and key on the
+        resolved user_id. Unknown emails fall through to the SDK, which
+        returns OK regardless — that's SuperTokens' built-in defense
+        against email enumeration and we preserve it.
+        """
+        from datetime import datetime, timedelta, timezone
+        from supertokens_python.asyncio import list_users_by_account_info
+        from supertokens_python.types.base import AccountInfoInput
+        from backend.database import SessionLocal
+        from backend.models.password_reset_attempt import PasswordResetAttempt
+
+        email = ""
+        for field in form_fields:
+            if field.id == "email":
+                email = field.value.strip().lower()
+
+        user_id: str | None = None
+        if email:
+            try:
+                users = await list_users_by_account_info(
+                    tenant_id, AccountInfoInput(email=email)
+                )
+                for u in users:
+                    for lm in u.login_methods:
+                        if lm.recipe_id == "emailpassword" and lm.has_same_email_as(email):
+                            user_id = u.id
+                            break
+                    if user_id:
+                        break
+            except Exception:
+                # Lookup failure shouldn't block the reset flow —
+                # fall through and let SuperTokens handle it.
+                user_id = None
+
+        if user_id is not None:
+            window_start = datetime.now(timezone.utc) - timedelta(hours=RESEND_WINDOW_HOURS)
+            db = SessionLocal()
+            try:
+                recent = (
+                    db.query(PasswordResetAttempt)
+                    .filter(
+                        PasswordResetAttempt.user_id == user_id,
+                        PasswordResetAttempt.created_at >= window_start,
+                    )
+                    .count()
+                )
+                if recent >= RESEND_MAX_ATTEMPTS:
+                    return GeneralErrorResponse(
+                        message=(
+                            f"You've requested {RESEND_MAX_ATTEMPTS} password-reset "
+                            f"emails in the last {RESEND_WINDOW_HOURS} hours. "
+                            "Please wait before requesting another."
+                        )
+                    )
+
+                result = await original_generate_reset_token_post(
+                    form_fields, tenant_id, api_options, user_context
+                )
+
+                if getattr(result, "status", None) == "OK":
+                    db.add(PasswordResetAttempt(user_id=user_id))
+                    db.commit()
+
+                return result
+            finally:
+                db.close()
+
+        # Unknown email → let the SDK return its enumeration-safe OK.
+        return await original_generate_reset_token_post(
+            form_fields, tenant_id, api_options, user_context
+        )
 
     async def sign_up_post(
         form_fields: list[FormField],
@@ -228,6 +312,7 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
         return result
 
     original.sign_up_post = sign_up_post
+    original.generate_password_reset_token_post = generate_password_reset_token_post
     return original
 
 

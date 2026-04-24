@@ -28,6 +28,7 @@ def init_db() -> None:
     from backend.models.conversation import Conversation, Message  # noqa: F401
     from backend.models.dataset import Dataset, Document, DocumentSegment  # noqa: F401
     from backend.models.email_verification_attempt import EmailVerificationAttempt  # noqa: F401
+    from backend.models.password_reset_attempt import PasswordResetAttempt  # noqa: F401
     from backend.models.user_flags import UserFlag  # noqa: F401
     from backend.models.user_profile import UserProfile  # noqa: F401
 

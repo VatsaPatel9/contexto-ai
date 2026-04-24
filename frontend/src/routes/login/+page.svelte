@@ -116,9 +116,19 @@
       </div>
 
       <div>
-        <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Password
-        </label>
+        <div class="flex items-center justify-between mb-1">
+          <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Password
+          </label>
+          {#if mode === 'login'}
+            <a
+              href="/auth/forgot-password"
+              class="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Forgot password?
+            </a>
+          {/if}
+        </div>
         <div class="relative">
           <input
             id="password"

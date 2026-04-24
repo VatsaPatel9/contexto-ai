@@ -31,7 +31,7 @@
   });
 
   // Public pages that don't require auth
-  const publicPaths = ['/', '/login'];
+  const publicPaths = ['/', '/login', '/auth/forgot-password', '/auth/reset-password'];
 
   $effect(() => {
     if (!ready) return;

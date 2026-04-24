@@ -8,7 +8,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: tutor-postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tutor_dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tutor_dev_pass}
@@ -59,6 +59,9 @@ services:
       - "3567:3567"
     environment:
       POSTGRESQL_CONNECTION_URI: "postgresql://${POSTGRES_USER:-tutor_dev}:${POSTGRES_PASSWORD:-tutor_dev_pass}@postgres:5432/supertokens"
+      # 2-hour password-reset link lifetime (default is 1h). Matches the
+      # 2h we already promise on the email-verification page.
+      PASSWORD_RESET_TOKEN_LIFETIME: "7200000"
     networks:
       - tutor-network
     depends_on:
