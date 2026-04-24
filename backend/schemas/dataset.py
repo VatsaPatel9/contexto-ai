@@ -15,6 +15,7 @@ class DocumentUploadResponse(BaseModel):
     uploaded_by: Optional[str] = None
     visibility: str = "global"
     deleted_at: Optional[str] = None
+    download_url: Optional[str] = None  # presigned R2 URL, valid for 1 hour
 
 
 class DocumentListResponse(BaseModel):

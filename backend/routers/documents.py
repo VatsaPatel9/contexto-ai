@@ -22,6 +22,11 @@ from backend.rag.extractors import extract_pdf_images, extract_text, is_pdf
 from backend.rag.splitter import RecursiveCharacterTextSplitter
 from backend.rag.vision import VisionProcessor
 from backend.schemas.dataset import DocumentListResponse, DocumentUploadResponse
+from backend.services.storage import (
+    build_key,
+    get_presigned_download_url,
+    upload_document as r2_upload_document,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,24 @@ async def upload_document(
     )
     db.add(doc)
     db.commit()  # commit so FK exists for segments
+
+    # Persist the original file to R2 under the user's prefix.
+    if settings.r2_bucket:
+        storage_key = build_key(user_id, str(doc.id), filename)
+        try:
+            r2_upload_document(
+                settings,
+                key=storage_key,
+                body=file_bytes,
+                content_type=doc.content_type,
+            )
+            doc.file_path = storage_key
+            db.commit()
+        except Exception as exc:
+            logger.error("R2 upload failed for doc %s: %s", doc.id, exc)
+            doc.status = "error"
+            db.commit()
+            raise HTTPException(status_code=500, detail="File storage upload failed")
 
     try:
         # 2. Extract text
@@ -214,6 +237,7 @@ async def upload_document(
         chunk_count=doc.chunk_count,
         uploaded_by=user_id,
         visibility=visibility,
+        download_url=get_presigned_download_url(settings, doc.file_path),
     )
 
 
@@ -229,6 +253,7 @@ async def list_documents(
     course_id: str,
     session: SessionContainer = Depends(require_auth()),
     db: DBSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
     """List documents.
 
@@ -266,6 +291,7 @@ async def list_documents(
                 uploaded_by=d.uploaded_by,
                 visibility=d.visibility,
                 deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
+                download_url=get_presigned_download_url(settings, d.file_path),
             )
             for d in docs
         ]

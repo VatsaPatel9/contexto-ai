@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     auth_api_domain: str = "http://localhost"
     auth_website_domain: str = "http://localhost"
 
+    # Cloudflare R2 object storage
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""
+
     class Config:
         env_file = str(BACKEND_DIR / ".env")
         extra = "ignore"

@@ -9,7 +9,7 @@ openai>=1.40
 
 # Database
 sqlalchemy>=2.0
-psycopg[binary]>=3.3
+psycopg[binary]>=3.1
 pgvector>=0.3
 
 # Document extraction
@@ -24,3 +24,6 @@ python-dotenv>=1.0
 
 # Auth (SuperTokens)
 supertokens-python>=0.27
+
+# Object storage (Cloudflare R2 — S3-compatible)
+boto3>=1.34
