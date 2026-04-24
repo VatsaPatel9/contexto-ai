@@ -218,29 +218,6 @@
           {/if}
         </div>
 
-        <!-- Uploads -->
-        <div class="bg-gray-50 dark:bg-gray-800 rounded-2xl p-5">
-          <h2 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Document Uploads</h2>
-          {#if profile.uploads.limit !== null || canUpload}
-            <div class="flex items-baseline gap-1 mb-3">
-              <span class="text-2xl font-bold text-gray-900 dark:text-white">{profile.uploads.count}</span>
-              {#if profile.uploads.limit}
-                <span class="text-sm text-gray-400">/ {profile.uploads.limit}</span>
-              {/if}
-              <span class="text-xs text-gray-400 ml-1">documents uploaded</span>
-            </div>
-            {#if profile.uploads.limit}
-              <div class="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden mb-3">
-                <div class="h-full rounded-full bg-purple-500 transition-all"
-                     style="width: {Math.min(100, (profile.uploads.count / profile.uploads.limit) * 100)}%">
-                </div>
-              </div>
-            {/if}
-          {:else}
-            <p class="text-sm text-gray-400">No upload permission granted. Contact your admin to request access.</p>
-          {/if}
-        </div>
-
         <!-- My Documents -->
         {#if canUpload || activeDocuments.length > 0}
           <div class="bg-gray-50 dark:bg-gray-800 rounded-2xl p-5">
