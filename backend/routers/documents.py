@@ -299,6 +299,56 @@ async def list_documents(
 
 
 # ------------------------------------------------------------------
+# GET /api/documents/{document_id}/signed-url
+# ------------------------------------------------------------------
+
+@router.get("/api/documents/{document_id}/signed-url")
+async def get_document_signed_url(
+    document_id: str,
+    session: SessionContainer = Depends(require_auth()),
+    db: DBSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Return a fresh 1-hour presigned GET URL for the stored original file.
+
+    Used by the chat UI to open a PDF viewer when a user clicks a citation
+    badge. Access rules mirror the document list endpoint: everyone can
+    open global docs; private docs only by the uploader; admins can open
+    anything (including soft-deleted).
+    """
+    user_id = session.get_user_id()
+    roles = await get_user_roles(session)
+    is_admin = SUPER_ADMIN in roles or ADMIN in roles
+
+    try:
+        doc_uuid = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID")
+
+    doc = db.query(Document).filter(Document.id == doc_uuid).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not is_admin:
+        if doc.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.visibility == "private" and doc.uploaded_by != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    if not doc.file_path:
+        raise HTTPException(
+            status_code=404,
+            detail="Original file not available for this document",
+        )
+
+    url = get_presigned_download_url(settings, doc.file_path)
+    if not url:
+        raise HTTPException(status_code=500, detail="Failed to generate download URL")
+
+    return {"download_url": url, "title": doc.title, "content_type": doc.content_type}
+
+
+# ------------------------------------------------------------------
 # DELETE /api/datasets/{course_id}/documents/{document_id}
 # ------------------------------------------------------------------
 

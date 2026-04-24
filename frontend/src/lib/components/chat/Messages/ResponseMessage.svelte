@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ChatMessage } from '$lib/stores';
-  import { session } from '$lib/stores';
+  import { session, openPdfViewer } from '$lib/stores';
   import { copyToClipboard } from '$lib/utils';
   import { submitFeedback } from '$lib/apis/contexto';
   import { toast } from 'svelte-sonner';
@@ -63,17 +63,28 @@
         <Markdown content={message.content} />
       </div>
 
-      <!-- Sources (above action bar) -->
+      <!-- Sources (above action bar) — clickable when doc_id is known -->
       {#if message.done && message.retrieverResources && message.retrieverResources.length > 0}
         <div class="mt-2 flex flex-wrap gap-1.5">
           {#each message.retrieverResources as source}
-            <span
+            {@const clickable = !!source.doc_id}
+            <button
+              type="button"
+              disabled={!clickable}
+              onclick={() => clickable && openPdfViewer({
+                docId: source.doc_id!,
+                title: source.doc_title,
+                page: source.page_num,
+                highlight: source.section ?? '',
+              })}
               class="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full
-                     bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
-              title={source.score != null ? `Relevance: ${(source.score * 100).toFixed(0)}%` : source.section ?? ''}
+                     bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400
+                     {clickable ? 'hover:bg-blue-100 dark:hover:bg-blue-900/40 cursor-pointer' : 'cursor-default'}
+                     transition"
+              title={clickable ? 'Open in document viewer' : (source.section ?? '')}
             >
               {source.doc_title}{source.page_num ? ` (p. ${source.page_num})` : ''}
-            </span>
+            </button>
           {/each}
         </div>
       {/if}

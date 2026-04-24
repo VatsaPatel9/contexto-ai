@@ -57,3 +57,20 @@ export async function deleteDocument(courseId: string, docId: string): Promise<v
     throw new Error(`Delete failed (${res.status}): ${text}`);
   }
 }
+
+export type SignedUrlResponse = {
+  download_url: string;
+  title: string;
+  content_type: string;
+};
+
+export async function getDocumentSignedUrl(docId: string): Promise<SignedUrlResponse> {
+  const res = await fetch(`${API_BASE}/api/documents/${docId}/signed-url`, {
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `Failed to fetch signed URL (${res.status})`);
+  }
+  return res.json();
+}

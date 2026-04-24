@@ -1,6 +1,22 @@
 import { writable, get } from 'svelte/store';
 import { v4 as uuidv4 } from 'uuid';
 
+// ── PDF viewer panel (right-side drawer) ──────────────────────────────
+export type PdfViewerRequest = {
+  docId: string;
+  title: string;
+  page?: number;
+  highlight?: string;
+};
+export const pdfViewerRequest = writable<PdfViewerRequest | null>(null);
+
+export function openPdfViewer(req: PdfViewerRequest) {
+  pdfViewerRequest.set(req);
+}
+export function closePdfViewer() {
+  pdfViewerRequest.set(null);
+}
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 export type ChatMessage = {

@@ -7,9 +7,12 @@
     session,
     currentChatId,
     conversations,
+    pdfViewerRequest,
+    closePdfViewer,
     type ChatMessage,
     type Conversation
   } from '$lib/stores';
+  import PdfViewer from '$lib/components/pdf/PdfViewer.svelte';
   import {
     sendChatMessage,
     getMessages,
@@ -66,11 +69,32 @@
     }
   }
 
+  // Enrich LLM-emitted citations (which only know doc_title/page/section)
+  // with doc_id from the server's retriever metadata so badges are
+  // clickable and can open the PDF viewer.
+  function enrichWithDocIds(
+    llmCitations: ChatMessage['retrieverResources'],
+    serverResources: ChatMessage['retrieverResources']
+  ): ChatMessage['retrieverResources'] {
+    if (!llmCitations || !serverResources) return llmCitations ?? serverResources ?? null;
+    const byTitle = new Map<string, any>();
+    for (const r of serverResources) {
+      if (!byTitle.has(r.doc_title)) byTitle.set(r.doc_title, r);
+    }
+    return llmCitations.map((c) => {
+      const m = byTitle.get(c.doc_title);
+      return m ? { ...c, doc_id: c.doc_id ?? m.doc_id } : c;
+    });
+  }
+
   function apiMessageToChat(msg: ApiMessage): ChatMessage {
     // Stored assistant text may contain a `citations` fence. Strip it for
     // display and prefer the parsed citations over the server's retriever
     // metadata so badges reflect what the LLM actually cited.
     const { display, citations } = parseCitationsFence(msg.content);
+    const enriched = citations
+      ? enrichWithDocIds(citations, msg.retriever_resources)
+      : msg.retriever_resources;
     return {
       id: msg.id,
       role: msg.role,
@@ -78,7 +102,7 @@
       timestamp: msg.created_at * 1000,
       messageType: msg.message_type,
       done: true,
-      retrieverResources: citations ?? msg.retriever_resources
+      retrieverResources: enriched
     };
   }
 
@@ -155,11 +179,19 @@
 
         if (event.event === 'message_end') {
           hydrateIfNew(event.conversation_id);
-          // Only fall back to the server's retriever metadata if the LLM
-          // didn't emit a citations fence during the stream.
-          if (!assistantMsg.retrieverResources && event.metadata?.retriever_resources) {
-            assistantMsg.retrieverResources = event.metadata.retriever_resources;
+          const serverResources = event.metadata?.retriever_resources ?? null;
+          if (assistantMsg.retrieverResources) {
+            // LLM emitted a fence — enrich its citations with doc_id
+            // from the server's retriever metadata so badges are clickable.
+            assistantMsg.retrieverResources = enrichWithDocIds(
+              assistantMsg.retrieverResources,
+              serverResources
+            );
+          } else if (serverResources) {
+            // LLM forgot the fence — fall back entirely to server metadata.
+            assistantMsg.retrieverResources = serverResources;
           }
+          messages = [...messages.slice(0, -1), { ...assistantMsg }];
         }
 
         if (event.event === 'error') {
@@ -192,26 +224,42 @@
   }
 </script>
 
-<div class="h-full max-h-[100dvh] flex flex-col">
-  <Navbar title={chatTitle} />
+<div class="h-full max-h-[100dvh] flex">
+  <!-- Chat column (narrows when the PDF panel is open) -->
+  <div class="h-full flex-1 min-w-0 flex flex-col">
+    <Navbar title={chatTitle} />
 
-  <!-- Messages area -->
-  <div
-    bind:this={messagesContainer}
-    class="flex-1 overflow-y-auto scrollbar-hidden"
-  >
-    {#if messages.length === 0}
-      <Placeholder onSuggestionClick={handleSuggestionClick} />
-    {:else}
-      <Messages {messages} />
-    {/if}
+    <!-- Messages area -->
+    <div
+      bind:this={messagesContainer}
+      class="flex-1 overflow-y-auto scrollbar-hidden"
+    >
+      {#if messages.length === 0}
+        <Placeholder onSuggestionClick={handleSuggestionClick} />
+      {:else}
+        <Messages {messages} />
+      {/if}
+    </div>
+
+    <!-- Input pinned to bottom -->
+    <MessageInput
+      bind:value={inputValue}
+      onsubmit={handleSubmit}
+      {loading}
+      onstop={handleStop}
+    />
   </div>
 
-  <!-- Input pinned to bottom -->
-  <MessageInput
-    bind:value={inputValue}
-    onsubmit={handleSubmit}
-    {loading}
-    onstop={handleStop}
-  />
+  <!-- Right-side PDF viewer panel -->
+  {#if $pdfViewerRequest}
+    <div class="h-full hidden md:block md:w-[45%] lg:w-[50%] xl:w-[55%] max-w-[900px] shrink-0">
+      <PdfViewer
+        docId={$pdfViewerRequest.docId}
+        title={$pdfViewerRequest.title}
+        page={$pdfViewerRequest.page ?? 1}
+        highlight={$pdfViewerRequest.highlight ?? ''}
+        onclose={closePdfViewer}
+      />
+    </div>
+  {/if}
 </div>
