@@ -26,7 +26,12 @@
     const result = await verifyEmailFromToken();
     if (result === 'OK') {
       status = 'success';
-      setTimeout(() => goto('/'), 1500);
+      // Hard navigation — the backend has just set fresh session
+      // cookies as part of the auto-login override. Reloading the
+      // app picks them up; client-side goto() wouldn't.
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 1200);
     } else if (result === 'INVALID_TOKEN') {
       status = 'invalid';
     } else {
@@ -38,11 +43,13 @@
     resending = true;
     try {
       const res = await sendEmailVerification();
-      if (res === 'OK') {
+      if (res.kind === 'ok') {
         toast.success('Verification email sent. Check your inbox.');
-      } else if (res === 'ALREADY_VERIFIED') {
+      } else if (res.kind === 'already_verified') {
         toast.success('Your email is already verified.');
-        goto('/');
+        window.location.href = '/';
+      } else if (res.kind === 'rate_limited') {
+        toast.error(res.message);
       } else {
         toast.error('Could not send verification email. Try signing in again.');
       }

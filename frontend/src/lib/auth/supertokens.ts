@@ -44,12 +44,28 @@ export async function isEmailVerified(): Promise<boolean> {
 }
 
 /** Ask the backend to (re)send a verification email to the signed-in user. */
-export async function sendEmailVerification(): Promise<'OK' | 'ALREADY_VERIFIED' | 'ERROR'> {
-  if (!(await Session.doesSessionExist())) return 'ERROR';
-  const res = await EmailVerification.sendVerificationEmail();
-  if (res.status === 'OK') return 'OK';
-  if (res.status === 'EMAIL_ALREADY_VERIFIED_ERROR') return 'ALREADY_VERIFIED';
-  return 'ERROR';
+export type SendVerificationResult =
+  | { kind: 'ok' }
+  | { kind: 'already_verified' }
+  | { kind: 'rate_limited'; message: string }
+  | { kind: 'error' };
+
+export async function sendEmailVerification(): Promise<SendVerificationResult> {
+  if (!(await Session.doesSessionExist())) return { kind: 'error' };
+  // The SDK types this response as OK | EMAIL_ALREADY_VERIFIED_ERROR, but
+  // the SuperTokens backend can also return a GeneralErrorResponse with a
+  // status of 'GENERAL_ERROR' (e.g. our rate-limit override). Cast so we
+  // can check that branch without TypeScript narrowing it away.
+  const res = (await EmailVerification.sendVerificationEmail()) as unknown as {
+    status: string;
+    message?: string;
+  };
+  if (res.status === 'OK') return { kind: 'ok' };
+  if (res.status === 'EMAIL_ALREADY_VERIFIED_ERROR') return { kind: 'already_verified' };
+  if (res.status === 'GENERAL_ERROR') {
+    return { kind: 'rate_limited', message: res.message ?? 'Too many requests.' };
+  }
+  return { kind: 'error' };
 }
 
 /**

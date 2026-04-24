@@ -27,8 +27,106 @@ from supertokens_python.recipe.emailpassword.types import FormField, InputFormFi
 from supertokens_python.recipe.emailverification.emaildelivery.services.smtp import (
     SMTPService as EmailVerificationSMTPService,
 )
+from supertokens_python.recipe.emailverification.interfaces import (
+    APIInterface as EmailVerificationAPIInterface,
+    APIOptions as EmailVerificationAPIOptions,
+    GenerateEmailVerifyTokenPostOkResult,
+    VerifyEmailPostOkResult,
+)
+from supertokens_python.types import GeneralErrorResponse
 
 from backend.config import Settings
+
+RESEND_WINDOW_HOURS = 24
+RESEND_MAX_ATTEMPTS = 3
+
+
+def _override_emailverification_apis(original: EmailVerificationAPIInterface) -> EmailVerificationAPIInterface:
+    """Two tweaks on the emailverification endpoints:
+
+    1. After a successful POST /auth/user/email/verify (the link-click
+       endpoint), auto-create a session if the user doesn't already
+       have one — so the "click email -> signed in" flow works even
+       when they open the link in a fresh browser.
+
+    2. Rate-limit POST /auth/user/email/verify/token (user-initiated
+       resend) to RESEND_MAX_ATTEMPTS per RESEND_WINDOW_HOURS per user.
+    """
+
+    original_verify_email_post = original.verify_email_post
+    original_generate_token_post = original.generate_email_verify_token_post
+
+    async def verify_email_post(
+        token: str,
+        tenant_id: str,
+        session,
+        api_options: EmailVerificationAPIOptions,
+        user_context,
+    ):
+        result = await original_verify_email_post(
+            token, tenant_id, session, api_options, user_context
+        )
+        if isinstance(result, VerifyEmailPostOkResult) and session is None:
+            # Fresh browser (no signup-time session cookie): create one
+            # so the frontend redirects into a signed-in state.
+            try:
+                from supertokens_python.recipe.session.asyncio import create_new_session
+                await create_new_session(
+                    api_options.request,
+                    tenant_id or "public",
+                    result.user.recipe_user_id,
+                )
+            except Exception:
+                # Auto-login is a nice-to-have; failure should not
+                # fail the verification.
+                pass
+        return result
+
+    async def generate_email_verify_token_post(
+        session,
+        api_options: EmailVerificationAPIOptions,
+        user_context,
+    ):
+        # Lazy import to avoid circular imports at module load time.
+        from datetime import datetime, timedelta, timezone
+        from backend.database import SessionLocal
+        from backend.models.email_verification_attempt import EmailVerificationAttempt
+
+        user_id = session.get_user_id()
+        window_start = datetime.now(timezone.utc) - timedelta(hours=RESEND_WINDOW_HOURS)
+
+        db = SessionLocal()
+        try:
+            recent = (
+                db.query(EmailVerificationAttempt)
+                .filter(
+                    EmailVerificationAttempt.user_id == user_id,
+                    EmailVerificationAttempt.created_at >= window_start,
+                )
+                .count()
+            )
+            if recent >= RESEND_MAX_ATTEMPTS:
+                return GeneralErrorResponse(
+                    message=(
+                        f"You've requested {RESEND_MAX_ATTEMPTS} verification "
+                        f"emails in the last {RESEND_WINDOW_HOURS} hours. "
+                        "Please wait before requesting another."
+                    )
+                )
+
+            result = await original_generate_token_post(session, api_options, user_context)
+
+            if isinstance(result, GenerateEmailVerifyTokenPostOkResult):
+                db.add(EmailVerificationAttempt(user_id=user_id))
+                db.commit()
+
+            return result
+        finally:
+            db.close()
+
+    original.verify_email_post = verify_email_post
+    original.generate_email_verify_token_post = generate_email_verify_token_post
+    return original
 
 
 def _build_smtp_settings(settings: Settings) -> SMTPSettings | None:
@@ -145,6 +243,9 @@ def init_supertokens(settings: Settings) -> None:
         emailverification.init(
             mode="REQUIRED" if settings.email_verification_required else "OPTIONAL",
             email_delivery=ev_email_delivery,
+            override=emailverification.InputOverrideConfig(
+                apis=_override_emailverification_apis,
+            ),
         ),
         userroles.init(),
         dashboard.init(),
