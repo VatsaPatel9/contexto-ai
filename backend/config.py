@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     auth_api_domain: str = "http://localhost"
     auth_website_domain: str = "http://localhost"
 
+    # Email-domain gate on signup. Default keeps the current PSU-only
+    # behavior; flipping RESTRICT_EMAIL_DOMAIN=false opens signup to
+    # any email. ALLOWED_EMAIL_DOMAIN swaps the permitted domain.
+    restrict_email_domain: bool = True
+    allowed_email_domain: str = "psu.edu"
+
     # Cloudflare R2 object storage
     r2_account_id: str = ""
     r2_access_key_id: str = ""

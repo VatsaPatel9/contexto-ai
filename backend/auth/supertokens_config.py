@@ -13,11 +13,9 @@ from supertokens_python.recipe.emailpassword.types import FormField, InputFormFi
 
 from backend.config import Settings
 
-ALLOWED_EMAIL_DOMAIN = "psu.edu"
 
-
-def _override_emailpassword_apis(original: EmailPasswordAPIInterface):
-    """Override signup to restrict email domain and capture display_name."""
+def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPIInterface):
+    """Override signup to optionally gate email domain and capture display_name."""
 
     original_sign_up_post = original.sign_up_post
 
@@ -37,13 +35,17 @@ def _override_emailpassword_apis(original: EmailPasswordAPIInterface):
             elif field.id == "display_name":
                 display_name = field.value.strip()
 
-        if not email.endswith(f"@{ALLOWED_EMAIL_DOMAIN}"):
-            from supertokens_python.recipe.emailpassword.interfaces import (
-                SignUpPostNotAllowedResponse,
-            )
-            return SignUpPostNotAllowedResponse(
-                reason=f"Only @{ALLOWED_EMAIL_DOMAIN} email addresses are allowed."
-            )
+        # Email-domain gate. Controlled by RESTRICT_EMAIL_DOMAIN env var
+        # (default True). When enabled, only ALLOWED_EMAIL_DOMAIN passes.
+        if settings.restrict_email_domain:
+            allowed = settings.allowed_email_domain.strip().lstrip("@").lower()
+            if allowed and not email.endswith(f"@{allowed}"):
+                from supertokens_python.recipe.emailpassword.interfaces import (
+                    SignUpPostNotAllowedResponse,
+                )
+                return SignUpPostNotAllowedResponse(
+                    reason=f"Only @{allowed} email addresses are allowed."
+                )
 
         result = await original_sign_up_post(
             form_fields=form_fields,
@@ -103,7 +105,7 @@ def init_supertokens(settings: Settings) -> None:
                     ],
                 ),
                 override=emailpassword.InputOverrideConfig(
-                    apis=_override_emailpassword_apis,
+                    apis=lambda orig: _override_emailpassword_apis(settings, orig),
                 ),
             ),
             session.init(),
