@@ -59,16 +59,8 @@
 </script>
 
 <div class="flex w-full group" style="scroll-margin-top: 3rem;">
-  <!-- Avatar -->
-  <div class="shrink-0 mr-3 mt-1">
-    <div class="size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
-                flex items-center justify-center text-white text-xs font-bold object-cover">
-      AI
-    </div>
-  </div>
-
   <!-- Content -->
-  <div class="flex-auto w-0 pl-1 relative">
+  <div class="flex-auto w-0 relative">
     {#if message.error}
       <div class="text-sm text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
         {message.error}
