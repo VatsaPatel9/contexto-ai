@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { getDocumentSignedUrl } from '$lib/apis/documents';
 
   let {
@@ -16,19 +16,23 @@
     onclose?: () => void;
   } = $props();
 
-  let canvasEl: HTMLCanvasElement;
-  let textLayerEl: HTMLDivElement;
+  // Fixed CSS width for each page; canvas is rendered at a higher internal
+  // resolution so text stays crisp on Hi-DPI screens.
+  const PAGE_CSS_WIDTH = 720;
+  const RENDER_SCALE = 1.6;
+
+  let containerEl: HTMLDivElement;
+  let pageEls: HTMLDivElement[] = $state([]);
+  let dims = $state<{ w: number; h: number }[]>([]); // per-page CSS dimensions
   let errorText = $state<string | null>(null);
   let loading = $state(true);
   let currentPage = $state(page);
-  let totalPages = $state(0);
-  let scale = $state(1.25);
 
-  // Keep the pdfjs module and loaded document around for page navigation.
-  // Dynamically imported so pdfjs-dist only ships when the viewer opens.
   let pdfjs: any = null;
   let pdfDoc: any = null;
-  let renderTask: any = null;
+  let observer: IntersectionObserver | null = null;
+  let rendered = new Set<number>();
+  let inflight = new Set<number>();
 
   async function loadPdfjs() {
     if (pdfjs) return pdfjs;
@@ -39,157 +43,210 @@
     return mod;
   }
 
-  async function fetchAndOpen() {
+  async function setupDocument() {
     loading = true;
     errorText = null;
     try {
       const lib = await loadPdfjs();
       const { download_url } = await getDocumentSignedUrl(docId);
       pdfDoc = await lib.getDocument({ url: download_url }).promise;
-      totalPages = pdfDoc.numPages;
-      currentPage = Math.min(Math.max(1, page), totalPages);
-      await renderPage(currentPage);
+
+      // Prefetch every page's dimensions so we can lay out placeholders
+      // at the correct aspect ratio before any canvas renders. Makes the
+      // initial scroll stable.
+      const out: { w: number; h: number }[] = [];
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const p = await pdfDoc.getPage(i);
+        const vp = p.getViewport({ scale: 1 });
+        const w = PAGE_CSS_WIDTH;
+        const h = (vp.height / vp.width) * PAGE_CSS_WIDTH;
+        out.push({ w, h });
+      }
+      dims = out;
+      loading = false;
+
+      await tick();
+      setupObserver();
+      scrollToTarget();
     } catch (e: any) {
       errorText = e?.message || 'Failed to open document';
-    } finally {
       loading = false;
     }
   }
 
-  async function renderPage(n: number) {
-    if (!pdfDoc || !canvasEl) return;
-    if (renderTask) {
-      try { renderTask.cancel(); } catch {}
-    }
-    const pdfPage = await pdfDoc.getPage(n);
-    const viewport = pdfPage.getViewport({ scale });
-
-    const ctx = canvasEl.getContext('2d');
-    canvasEl.width = viewport.width;
-    canvasEl.height = viewport.height;
-    canvasEl.style.width = `${viewport.width}px`;
-    canvasEl.style.height = `${viewport.height}px`;
-
-    renderTask = pdfPage.render({ canvasContext: ctx, viewport });
-    await renderTask.promise;
-
-    // Best-effort text-layer + highlight. If anything here throws, we
-    // still have the rendered page — silent fallback.
-    if (textLayerEl) {
-      textLayerEl.innerHTML = '';
-      textLayerEl.style.width = `${viewport.width}px`;
-      textLayerEl.style.height = `${viewport.height}px`;
-      try {
-        const textContent = await pdfPage.getTextContent();
-        const needle = highlight.trim().toLowerCase();
-        for (const item of textContent.items as any[]) {
-          const str: string = item.str ?? '';
-          if (!str) continue;
-          const tx = pdfjs.Util.transform(viewport.transform, item.transform);
-          const fontSize = Math.hypot(tx[2], tx[3]);
-          const span = document.createElement('span');
-          span.textContent = str;
-          span.style.position = 'absolute';
-          span.style.left = `${tx[4]}px`;
-          span.style.top = `${tx[5] - fontSize}px`;
-          span.style.fontSize = `${fontSize}px`;
-          span.style.whiteSpace = 'pre';
-          span.style.color = 'transparent';
-          span.style.pointerEvents = 'none';
-          if (needle && str.toLowerCase().includes(needle)) {
-            span.style.background = 'rgba(250, 204, 21, 0.45)'; // amber-400/45%
+  function setupObserver() {
+    if (!containerEl) return;
+    observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const idx = Number((entry.target as HTMLElement).dataset.pageIdx);
+          if (!Number.isFinite(idx)) continue;
+          if (entry.isIntersecting) {
+            if (!rendered.has(idx + 1) && !inflight.has(idx + 1)) {
+              renderPage(idx + 1);
+            }
+            // Track which page is currently centred for the header display.
+            if (entry.intersectionRatio > 0.3) {
+              currentPage = idx + 1;
+            }
           }
-          textLayerEl.appendChild(span);
         }
-      } catch {
-        // ignore text-layer failures
-      }
+      },
+      { root: containerEl, rootMargin: '200px 0px', threshold: [0, 0.3, 0.6] }
+    );
+    for (const el of pageEls) {
+      if (el) observer.observe(el);
     }
   }
 
-  async function go(delta: number) {
-    const n = Math.min(Math.max(1, currentPage + delta), totalPages);
-    if (n === currentPage) return;
-    currentPage = n;
-    await renderPage(n);
+  async function renderPage(n: number) {
+    if (!pdfDoc || rendered.has(n) || inflight.has(n)) return;
+    inflight.add(n);
+    try {
+      const pdfPage = await pdfDoc.getPage(n);
+      const vp = pdfPage.getViewport({ scale: RENDER_SCALE });
+      const wrap = pageEls[n - 1];
+      if (!wrap) return;
+      const canvas = wrap.querySelector('canvas') as HTMLCanvasElement | null;
+      const textLayer = wrap.querySelector('.text-layer') as HTMLDivElement | null;
+      if (!canvas) return;
+
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      // CSS size stays at PAGE_CSS_WIDTH × aspect; internal resolution is
+      // vp.width × vp.height (higher). Browser scales the canvas down →
+      // sharp rendering on HiDPI.
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
+
+      if (textLayer) {
+        textLayer.innerHTML = '';
+        try {
+          const tc = await pdfPage.getTextContent();
+          const needle = highlight.trim().toLowerCase();
+          // Text layer is positioned in CSS pixels matching the CSS size.
+          // Scale the transform matrix down from render-scale coords to CSS.
+          const cssVp = pdfPage.getViewport({ scale: dims[n - 1].w / (vp.width / RENDER_SCALE) });
+          for (const item of tc.items as any[]) {
+            const str: string = item.str ?? '';
+            if (!str.trim()) continue;
+            const tx = pdfjs.Util.transform(cssVp.transform, item.transform);
+            const fs = Math.hypot(tx[2], tx[3]);
+            const span = document.createElement('span');
+            span.textContent = str;
+            span.style.position = 'absolute';
+            span.style.left = `${tx[4]}px`;
+            span.style.top = `${tx[5] - fs}px`;
+            span.style.fontSize = `${fs}px`;
+            span.style.whiteSpace = 'pre';
+            span.style.color = 'transparent';
+            span.style.pointerEvents = 'none';
+            if (needle && str.toLowerCase().includes(needle)) {
+              span.style.background = 'rgba(250, 204, 21, 0.45)'; // amber-400/45
+            }
+            textLayer.appendChild(span);
+          }
+        } catch {
+          // Text-layer failure is non-fatal — canvas still shows.
+        }
+      }
+
+      rendered.add(n);
+    } finally {
+      inflight.delete(n);
+    }
   }
 
-  onMount(fetchAndOpen);
+  function scrollToTarget() {
+    if (!containerEl) return;
+    const idx = Math.max(0, Math.min(page - 1, dims.length - 1));
+    const el = pageEls[idx];
+    if (el) el.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }
 
-  // Re-render if docId or page prop changes (e.g. user clicks another citation
-  // while the viewer is open).
+  onMount(setupDocument);
+
+  // If the parent passes a new docId (user clicks a different citation),
+  // tear down and reload.
   $effect(() => {
     void docId;
-    void page;
-    // Only re-fetch when docId changes; page-only changes re-render.
-    if (pdfDoc && currentPage !== page) {
-      currentPage = Math.min(Math.max(1, page), totalPages || page);
-      renderPage(currentPage);
-    }
+    // Only react after initial mount
+    if (!pdfjs) return;
+    rendered = new Set();
+    inflight = new Set();
+    dims = [];
+    pageEls = [];
+    try { observer?.disconnect(); } catch {}
+    try { pdfDoc?.destroy(); } catch {}
+    setupDocument();
   });
 
   onDestroy(() => {
-    try { renderTask?.cancel(); } catch {}
+    try { observer?.disconnect(); } catch {}
     try { pdfDoc?.destroy(); } catch {}
   });
 </script>
 
 <div class="h-full flex flex-col bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800">
   <!-- Header -->
-  <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800">
+  <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
     <div class="min-w-0 pr-3">
       <div class="text-sm font-medium truncate text-gray-900 dark:text-gray-100">{title}</div>
-      {#if totalPages}
-        <div class="text-[11px] text-gray-500 dark:text-gray-400">Page {currentPage} of {totalPages}</div>
+      {#if dims.length}
+        <div class="text-[11px] text-gray-500 dark:text-gray-400">Page {currentPage} of {dims.length}</div>
       {/if}
     </div>
-    <div class="flex items-center gap-1">
-      <button
-        onclick={() => go(-1)}
-        disabled={currentPage <= 1 || loading}
-        class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30"
-        title="Previous page"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
-      <button
-        onclick={() => go(1)}
-        disabled={currentPage >= totalPages || loading}
-        class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-30"
-        title="Next page"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
-      </button>
-      <button
-        onclick={() => onclose?.()}
-        class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 ml-1"
-        title="Close"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18" />
-          <line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      </button>
-    </div>
+    <button
+      onclick={() => onclose?.()}
+      class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+      title="Close"
+      aria-label="Close viewer"
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
   </div>
 
-  <!-- Body -->
-  <div class="flex-1 overflow-auto bg-gray-100 dark:bg-gray-950 flex items-start justify-center p-4">
+  <!-- Scrollable pages -->
+  <div
+    bind:this={containerEl}
+    class="flex-1 overflow-y-auto bg-gray-100 dark:bg-gray-950 py-4 px-2"
+  >
     {#if errorText}
-      <div class="text-sm text-red-500 max-w-sm text-center mt-10">{errorText}</div>
+      <div class="text-sm text-red-500 max-w-sm text-center mx-auto mt-10">{errorText}</div>
     {:else if loading}
-      <div class="flex items-center gap-2 text-sm text-gray-500 mt-10">
+      <div class="flex items-center gap-2 text-sm text-gray-500 justify-center mt-10">
         <div class="size-4 rounded-full border-2 border-gray-400 border-t-transparent animate-spin"></div>
         Loading PDF…
       </div>
+    {:else}
+      <div class="flex flex-col items-center gap-3">
+        {#each dims as d, i}
+          <div
+            bind:this={pageEls[i]}
+            data-page-idx={i}
+            class="relative bg-white shadow-md"
+            style="width: {d.w}px; height: {d.h}px;"
+          >
+            <canvas></canvas>
+            <div class="text-layer absolute inset-0 origin-top-left pointer-events-none"></div>
+          </div>
+        {/each}
+      </div>
     {/if}
-    <div class="relative inline-block" class:hidden={errorText || loading}>
-      <canvas bind:this={canvasEl} class="shadow-md"></canvas>
-      <div bind:this={textLayerEl} class="absolute top-0 left-0 origin-top-left"></div>
-    </div>
   </div>
 </div>
+
+<style>
+  /* The text layer sits on top of the canvas at the same CSS size; spans
+     inside are absolutely positioned to match the PDF text coordinates. */
+  :global(.text-layer span) {
+    line-height: 1;
+  }
+</style>
