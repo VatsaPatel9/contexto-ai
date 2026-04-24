@@ -63,6 +63,15 @@
     return text.replace(/(?<!\n)(\s)-\s+\*\*/g, '\n- **');
   }
 
+  // Ensure ATX headings (## … ######) have a blank line before them.
+  // With marked's `breaks: true`, a single \n becomes <br>, so a heading
+  // glued to the end of the previous sentence renders as literal '### Foo'
+  // text. Insert a blank line before any 2-6 hash heading that follows
+  // non-newline content.
+  function fixHeadings(text: string): string {
+    return text.replace(/([^\n])\s+(#{2,6}\s+)/g, '$1\n\n$2');
+  }
+
   // Process KaTeX math (inline $...$ and display $$...$$)
   function preprocessMath(text: string): string {
     // Display math: $$...$$
@@ -81,6 +90,7 @@
     let processed = stripCitations(content);
     processed = fixNumberedLists(processed);
     processed = fixBulletLists(processed);
+    processed = fixHeadings(processed);
     processed = preprocessMath(processed);
     const raw = marked.parse(processed) as string;
     htmlContent = DOMPurify.sanitize(raw, {
