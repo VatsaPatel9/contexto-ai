@@ -34,17 +34,21 @@
   // React to chatId changes (handles both initial mount AND navigation between chats)
   $effect(() => {
     const id = chatId;
-    if (id) {
-      currentChatId.set(id);
-      messages = [];
-      chatTitle = 'Loading...';
-      loading = false;
-      loadConversation(id);
-    } else {
+    if (!id) {
       currentChatId.set(null);
       messages = [];
       chatTitle = 'New Chat';
+      return;
     }
+    currentChatId.set(id);
+    // Skip the refetch when we already have the conversation in memory —
+    // e.g. right after our own stream just assigned chatId to this value.
+    // Without this guard, message_end would wipe the streamed markdown
+    // and replace it with the server-stored (post-processed) copy, which
+    // looks like a full-page reformat flash.
+    if (loading || messages.length > 0) return;
+    chatTitle = 'Loading...';
+    loadConversation(id);
   });
 
   async function loadConversation(convId: string) {
@@ -130,7 +134,11 @@
             updatedAt: Date.now()
           };
           conversations.update((list) => [newConv, ...list]);
-          goto(`/c/${chatId}`, { replaceState: true });
+          // Update the URL silently — don't use goto(), which re-runs the
+          // SvelteKit route and would remount ChatWindow mid-stream.
+          if (typeof window !== 'undefined') {
+            window.history.replaceState(null, '', `/c/${chatId}`);
+          }
         };
 
         if (event.event === 'message_end') {
