@@ -485,6 +485,19 @@ async def process_chat_message(
                 score_threshold=settings.rag_score_threshold,
                 user_id=user_id,
             )
+            # Fallback pass: short / colloquial / misspelled queries
+            # ("what is time complexity?") sometimes score just below the
+            # primary floor against formal lecture chunks. Retry once at a
+            # looser threshold and let the LLM gate relevance via the
+            # system prompt's lean-toward-answering rule.
+            if not source_chunks and effective_dataset_id:
+                source_chunks = retriever.retrieve(
+                    working_query,
+                    effective_dataset_id,
+                    top_k=settings.rag_top_k,
+                    score_threshold=settings.rag_score_threshold_fallback,
+                    user_id=user_id,
+                )
         except Exception as exc:
             logger.error("RAG retrieval failed: %s", exc)
 

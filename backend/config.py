@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 200
     rag_top_k: int = 8
-    rag_score_threshold: float = 0.30
+    rag_score_threshold: float = 0.20
+    rag_score_threshold_fallback: float = 0.10
     course_name: str = "the uploaded course materials"
     enable_humanizer: bool = False
     cors_allow_origins: str = "*"
