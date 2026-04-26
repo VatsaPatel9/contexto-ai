@@ -116,6 +116,7 @@ def create_app() -> FastAPI:
 
     # Import and include routers
     from backend.routers.admin import router as admin_router
+    from backend.routers.auth_verify import router as auth_verify_router
     from backend.routers.chat import router as chat_router
     from backend.routers.courses import router as courses_router
     from backend.routers.documents import router as documents_router
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
     from backend.routers.profile import router as profile_router
 
     app.include_router(admin_router)
+    app.include_router(auth_verify_router)
     app.include_router(chat_router)
     app.include_router(courses_router)
     app.include_router(documents_router)

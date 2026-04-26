@@ -97,15 +97,37 @@ export async function sendEmailVerification(): Promise<SendVerificationResult> {
 
 /**
  * Called from the /auth/verify-email landing page after the user clicks
- * the link in their inbox. Reads the token from the URL and submits it.
+ * the link in their inbox. Reads the token from the URL and submits it
+ * to the backend ``/api/auth/verify-email-token`` endpoint.
+ *
+ * Why a backend endpoint and not the SuperTokens Web JS SDK: the SDK's
+ * verifyEmail() flows through its session-aware HTTP client, which can
+ * fail silently on a *different device* than the one that signed up
+ * (no SuperTokens cookies on the new browser). The backend route
+ * doesn't care about session state — the token is the auth — so the
+ * link works on any device.
  */
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
+
 export async function verifyEmailFromToken(): Promise<
   'OK' | 'INVALID_TOKEN' | 'ERROR'
 > {
+  const params = new URLSearchParams(location.search);
+  const token = params.get('token') ?? '';
+  const tenantId = params.get('tenantId') ?? 'public';
+  if (!token) return 'INVALID_TOKEN';
+
   try {
-    const res = await EmailVerification.verifyEmail();
-    if (res.status === 'OK') return 'OK';
-    if (res.status === 'EMAIL_VERIFICATION_INVALID_TOKEN_ERROR') return 'INVALID_TOKEN';
+    const res = await fetch(`${API_BASE}/api/auth/verify-email-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // No credentials — the token is the auth, no session needed.
+      body: JSON.stringify({ token, tenant_id: tenantId }),
+    });
+    if (!res.ok) return 'ERROR';
+    const body = (await res.json()) as { status?: string };
+    if (body.status === 'OK') return 'OK';
+    if (body.status === 'INVALID_TOKEN') return 'INVALID_TOKEN';
     return 'ERROR';
   } catch {
     return 'ERROR';

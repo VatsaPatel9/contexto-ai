@@ -249,15 +249,24 @@ async def get_user_profile(
 
     roles_result = await get_roles_for_user("public", user_id)
 
-    # Fetch email from SuperTokens
+    # Fetch email + verification status from SuperTokens. The recipe
+    # user id we capture here lets the UI decide whether to show the
+    # super_admin "Mark email verified" override button.
     email = None
+    email_verified = False
     try:
         from supertokens_python.asyncio import get_user
+        from supertokens_python.recipe.emailverification.asyncio import is_email_verified
+
         user = await get_user(user_id)
         if user:
             for lm in user.login_methods:
                 if lm.email:
                     email = lm.email
+                    try:
+                        email_verified = await is_email_verified(lm.recipe_user_id, lm.email)
+                    except Exception:
+                        email_verified = False
                     break
     except Exception:
         pass
@@ -266,6 +275,7 @@ async def get_user_profile(
         "user_id": user_id,
         "display_name": profile.display_name,
         "email": email,
+        "email_verified": email_verified,
         "roles": roles_result.roles,
         "uploads": {
             "count": profile.upload_count,
@@ -472,4 +482,72 @@ async def unban_user(
         "user_id": user_id,
         "flag_level": flag.flag_level,
         "unbanned_by": admin_id,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EMAIL VERIFICATION (super_admin override)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/users/{user_id}/verify-email")
+async def admin_verify_email(
+    user_id: str,
+    session: SessionContainer = Depends(require_role(SUPER_ADMIN)),
+):
+    """Force-mark a user's email as verified.
+
+    For support cases: a student says they verified but never see "OK"
+    on the link page (email client mangled the URL, network blip,
+    expired token, etc.). super_admin can bypass the token flow.
+    Restricted to super_admin because this is an authentication override.
+    """
+    from supertokens_python.asyncio import get_user
+    from supertokens_python.recipe.emailverification.asyncio import (
+        create_email_verification_token,
+        is_email_verified,
+        verify_email_using_token,
+    )
+    from supertokens_python.recipe.emailverification.interfaces import (
+        CreateEmailVerificationTokenOkResult,
+        VerifyEmailUsingTokenOkResult,
+    )
+
+    user = await get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Pick the emailpassword login method (the only kind we support).
+    target_email: str | None = None
+    target_recipe_user_id = None
+    for lm in user.login_methods:
+        if lm.recipe_id == "emailpassword" and lm.email:
+            target_email = lm.email
+            target_recipe_user_id = lm.recipe_user_id
+            break
+    if target_email is None or target_recipe_user_id is None:
+        raise HTTPException(status_code=400, detail="User has no email login method")
+
+    # Fast path: already verified.
+    already = await is_email_verified(target_recipe_user_id, target_email)
+    if already:
+        return {"result": "success", "user_id": user_id, "already_verified": True}
+
+    # SuperTokens has no direct "set verified=true" API; the supported
+    # path is create-then-consume a token in one round-trip on the server.
+    token_result = await create_email_verification_token(
+        "public", target_recipe_user_id, target_email
+    )
+    if not isinstance(token_result, CreateEmailVerificationTokenOkResult):
+        # EmailAlreadyVerifiedError can race with the fast path above.
+        return {"result": "success", "user_id": user_id, "already_verified": True}
+
+    consume_result = await verify_email_using_token("public", token_result.token)
+    if not isinstance(consume_result, VerifyEmailUsingTokenOkResult):
+        raise HTTPException(status_code=500, detail="Verification failed unexpectedly")
+
+    return {
+        "result": "success",
+        "user_id": user_id,
+        "already_verified": False,
+        "performed_by": session.get_user_id(),
     }

@@ -13,6 +13,7 @@ export type UserProfile = {
   user_id: string;
   display_name: string | null;
   email: string | null;
+  email_verified: boolean;
   roles: string[];
   uploads: { count: number; limit: number | null };
   tokens: { in: number; out: number; total: number; limit: number | null };
@@ -154,6 +155,15 @@ export async function banUser(userId: string, reason: string = 'Banned by admin'
 
 export async function unbanUser(userId: string) {
   const res = await adminFetch(`/api/admin/users/${userId}/unban`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+// ── Email verification override (super_admin only) ────────────────────
+
+export async function adminVerifyEmail(userId: string) {
+  const res = await adminFetch(`/api/admin/users/${userId}/verify-email`, {
     method: 'POST',
   });
   return res.json();

@@ -23,6 +23,7 @@
     listCourses,
     createCourse,
     deleteCourse,
+    adminVerifyEmail,
     type UserProfile,
     type Violation,
     type Course,
@@ -366,6 +367,22 @@
     showConfirm = true;
   }
 
+  async function handleMarkEmailVerified(userId: string) {
+    confirmMessage = `Mark ${userLabel(userId)}'s email as verified? They'll be able to sign in immediately.`;
+    confirmAction = async () => {
+      try {
+        const res = await adminVerifyEmail(userId);
+        if (res.already_verified) {
+          toast.success('Email was already verified');
+        } else {
+          toast.success('Email marked verified');
+        }
+        if (selectedProfile?.user_id === userId) selectedProfile = await getUserProfile(userId);
+      } catch (e: any) { toast.error(e.message); }
+    };
+    showConfirm = true;
+  }
+
   function formatTokens(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -576,9 +593,29 @@
                         {role.replace('_', ' ')}
                       </span>
                     {/each}
+                    {#if selectedProfile.email_verified}
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium
+                                   bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="size-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        verified
+                      </span>
+                    {:else}
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                        unverified
+                      </span>
+                    {/if}
                   </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
+                  {#if isSuperAdmin && !selectedProfile.email_verified}
+                    <button onclick={() => handleMarkEmailVerified(selectedProfile!.user_id)}
+                            class="text-xs px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-green-100
+                                   dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40 transition font-medium">
+                      Mark verified
+                    </button>
+                  {/if}
                   {#if isSuperAdmin}
                     {#if !selectedProfile.roles.includes('admin')}
                       <button onclick={() => handlePromoteToAdmin(selectedProfile!.user_id)}
