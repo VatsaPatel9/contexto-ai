@@ -61,8 +61,10 @@
       const res = await listDocuments(courseId);
       // Preserve any in-flight optimistic rows that the server hasn't
       // seen yet — they merge back in when the upload promise resolves.
+      // Soft-deleted documents are stripped entirely so they don't
+      // render at all (admins manage deletion via the trash button).
       const pending = docs.filter((d) => d.pending);
-      docs = [...pending, ...res.data];
+      docs = [...pending, ...res.data.filter((d) => !d.deleted_at)];
       schedulePoll();
     } catch (e: any) {
       toast.error(e.message || 'Failed to load documents');
@@ -138,11 +140,16 @@
   function askDelete(doc: LocalDoc) {
     confirmTitle = doc.title;
     confirmAction = async () => {
+      // Remove the tile up front so the UI feels instant; if the delete
+      // call rejects we restore it.
+      const removedId = doc.id;
+      const previous = docs;
+      docs = docs.filter((d) => d.id !== removedId);
       try {
-        await deleteDocument(courseId, doc.id);
+        await deleteDocument(courseId, removedId);
         toast.success('Document deleted');
-        await load();
       } catch (e: any) {
+        docs = previous;
         toast.error(e.message);
       }
     };
