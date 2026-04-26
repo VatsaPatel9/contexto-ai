@@ -62,12 +62,19 @@
     return [...ids];
   });
 
-  /** Get a human-readable label for a user ID. */
+  /** Get a human-readable label for a user ID — full display name or full email, never the ID. */
   function userLabel(userId: string): string {
     const cached = userNameCache[userId];
     if (cached?.displayName) return cached.displayName;
-    if (cached?.email) return cached.email.split('@')[0];
-    return userId.slice(0, 8) + '...';
+    if (cached?.email) return cached.email;
+    return 'Loading…';
+  }
+
+  /** Secondary label (email when display name is the primary), or empty. */
+  function userSubLabel(userId: string): string {
+    const cached = userNameCache[userId];
+    if (cached?.displayName && cached?.email) return cached.email;
+    return '';
   }
 
   /** Get initials for avatar. */
@@ -75,7 +82,7 @@
     const cached = userNameCache[userId];
     if (cached?.displayName) return cached.displayName.slice(0, 2).toUpperCase();
     if (cached?.email) return cached.email.slice(0, 2).toUpperCase();
-    return userId.slice(0, 2).toUpperCase();
+    return '??';
   }
 
   // Search dropdown
@@ -332,7 +339,7 @@
   }
 
   async function handleBan(userId: string) {
-    confirmMessage = `Ban user ${userId.slice(0, 8)}...? They will be unable to send messages.`;
+    confirmMessage = `Ban ${userLabel(userId)}? They will be unable to send messages.`;
     confirmAction = async () => {
       try {
         await banUser(userId, 'Banned by admin');
@@ -354,7 +361,7 @@
   }
 
   async function handlePromoteToAdmin(userId: string) {
-    confirmMessage = `Promote user ${userId.slice(0, 8)}... to admin?`;
+    confirmMessage = `Promote ${userLabel(userId)} to admin?`;
     confirmAction = async () => {
       try {
         await assignRole(userId, 'admin');
@@ -367,7 +374,7 @@
   }
 
   async function handleDemoteFromAdmin(userId: string) {
-    confirmMessage = `Remove admin role from ${userId.slice(0, 8)}...?`;
+    confirmMessage = `Remove admin role from ${userLabel(userId)}?`;
     confirmAction = async () => {
       try {
         await removeRole(userId, 'admin');
@@ -500,7 +507,7 @@
 
   async function handleUnenrollMember(member: CourseMember) {
     if (!selectedCourse) return;
-    const label = member.display_name || member.email || member.user_id.slice(0, 8) + '...';
+    const label = member.display_name || member.email || 'this user';
     confirmMessage = `Remove ${label} from "${selectedCourse.name}"?`;
     confirmAction = async () => {
       try {
@@ -612,7 +619,7 @@
                 onfocus={() => showDropdown = true}
                 oninput={() => showDropdown = true}
                 onclick={(e) => e.stopPropagation()}
-                placeholder="Search users by ID..."
+                placeholder="Search users by name or email..."
                 class="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white placeholder:text-gray-400"
               />
               {#if searchQuery}
@@ -654,7 +661,9 @@
                       <div class="flex-1 min-w-0">
                         <div class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{userLabel(userId)}</div>
                         <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span class="text-[10px] text-gray-400 font-mono truncate">{userId.slice(0, 12)}</span>
+                          {#if userSubLabel(userId)}
+                            <span class="text-[10px] text-gray-400 truncate">{userSubLabel(userId)}</span>
+                          {/if}
                           {#each getUserRoleDisplay(userId) as role}
                             <span class="px-1 py-0 rounded text-[8px] font-medium {getRoleBadgeColor(role)}">
                               {role.replace('_', ' ')}
@@ -685,13 +694,12 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <h2 class="text-base font-semibold text-gray-900 dark:text-white truncate">
-                    {selectedProfile.display_name || selectedProfile.email?.split('@')[0] || selectedProfile.user_id.slice(0, 8) + '...'}
+                    {selectedProfile.display_name || selectedProfile.email || 'Loading…'}
                   </h2>
-                  {#if selectedProfile.email}
+                  {#if selectedProfile.display_name && selectedProfile.email}
                     <p class="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">{selectedProfile.email}</p>
                   {/if}
                   <div class="flex items-center gap-1.5 mt-1 flex-wrap">
-                    <span class="text-[9px] text-gray-400 font-mono">{selectedProfile.user_id.slice(0, 12)}</span>
                     {#each selectedProfile.roles as role}
                       <span class="px-2 py-0.5 rounded-full text-[10px] font-medium {getRoleBadgeColor(role)}">
                         {role.replace('_', ' ')}
@@ -1060,8 +1068,8 @@
                   {:else}
                     {#each enrollCandidates() as candId (candId)}
                       {@const cached = userNameCache[candId]}
-                      {@const label = cached?.displayName || cached?.email?.split('@')[0] || candId.slice(0, 8) + '...'}
-                      {@const initials = (cached?.displayName || cached?.email || candId).slice(0, 2).toUpperCase()}
+                      {@const label = cached?.displayName || cached?.email || 'Loading…'}
+                      {@const initials = (cached?.displayName || cached?.email || '??').slice(0, 2).toUpperCase()}
                       <div class="flex items-center gap-2.5 px-3 py-2 border-b last:border-b-0 border-gray-100 dark:border-gray-800
                                   hover:bg-white dark:hover:bg-gray-800 transition">
                         <div class="shrink-0 size-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
@@ -1116,7 +1124,7 @@
                       <div class="flex items-center justify-between px-4 py-2.5">
                         <div class="min-w-0 flex-1">
                           <div class="text-sm text-gray-900 dark:text-white truncate">
-                            {m.display_name || m.email || m.user_id.slice(0, 12) + '...'}
+                            {m.display_name || m.email || 'Loading…'}
                           </div>
                           <div class="flex items-center gap-2 mt-0.5">
                             {#if m.email && m.display_name}
