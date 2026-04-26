@@ -311,6 +311,40 @@ async def list_documents(
     roles = await get_user_roles(session)
     is_admin = SUPER_ADMIN in roles or ADMIN in roles
 
+    # Baseline view: the super_admin baseline page queries with the
+    # sentinel course_id "_baseline_", but in practice baseline-tagged
+    # uploads live in whichever dataset the upload URL pointed at —
+    # there is no dedicated "_baseline_" dataset row. So we ignore
+    # course_id here and surface every doc whose uploader_role column
+    # equals "baseline", regardless of which dataset hosts it. Soft-
+    # deleted rows are excluded (the page has no restore UI and the
+    # frontend filters again as a backstop).
+    if course_id == "_baseline_" and is_admin:
+        docs = (
+            db.query(Document)
+            .filter(
+                Document.uploader_role == "baseline",
+                Document.deleted_at.is_(None),
+            )
+            .order_by(Document.created_at.desc())
+            .all()
+        )
+        return DocumentListResponse(
+            data=[
+                DocumentUploadResponse(
+                    id=str(d.id),
+                    title=d.title,
+                    status=d.status,
+                    chunk_count=d.chunk_count or 0,
+                    uploaded_by=d.uploaded_by,
+                    visibility=d.visibility,
+                    deleted_at=None,
+                    download_url=get_presigned_download_url(settings, d.file_path),
+                )
+                for d in docs
+            ]
+        )
+
     dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
     if not dataset:
         return DocumentListResponse(data=[])
@@ -334,7 +368,11 @@ async def list_documents(
         )
         from sqlalchemy import or_
         q = q.filter(Document.deleted_at.is_(None), or_(*visibility_clauses))
-    # Admins: see everything (including soft-deleted)
+    else:
+        # Admins on per-course views also shouldn't see soft-deleted
+        # rows by default — the page has no restore UI, so showing
+        # them just adds clutter. Frontend filters again as a backstop.
+        q = q.filter(Document.deleted_at.is_(None))
 
     docs = q.order_by(Document.created_at.desc()).all()
 
