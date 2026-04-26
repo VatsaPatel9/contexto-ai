@@ -193,8 +193,10 @@
       bind:value
       onkeydown={handleKeydown}
       oninput={autoResize}
-      placeholder={isUploading ? 'Uploading document — please wait…' : 'Send a message...'}
-      disabled={isUploading}
+      placeholder={loading
+        ? 'Tutor is responding — wait for it to finish…'
+        : isUploading ? 'Uploading document — please wait…' : 'Send a message...'}
+      disabled={loading || isUploading}
       rows="1"
       class="scrollbar-hidden bg-transparent dark:text-gray-100 outline-hidden w-full
              resize-none h-fit max-h-96 overflow-auto

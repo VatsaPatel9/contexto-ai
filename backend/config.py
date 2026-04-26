@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket: str = ""
 
+    # Redis (rate limiting + read cache). The dev compose file exposes
+    # 6379; production swaps in a managed redis URL.
+    redis_url: str = "redis://localhost:6379/0"
+
     class Config:
         env_file = str(BACKEND_DIR / ".env")
         extra = "ignore"

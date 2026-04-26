@@ -24,6 +24,7 @@ from backend.rag.splitter import RecursiveCharacterTextSplitter
 from backend.rag.vision import VisionProcessor
 from backend.schemas.dataset import DocumentListResponse, DocumentUploadResponse
 from backend.services.doc_converter import convert_to_pdf, is_convertible
+from backend.services.rate_limiter import UPLOAD_WINDOWS, enforce_user_limits
 from backend.services.storage import (
     build_key,
     get_presigned_download_url,
@@ -52,6 +53,10 @@ async def upload_document(
 ):
     """Upload a file, extract text, chunk, embed, and store in the vector DB."""
     user_id = session.get_user_id()
+    # Per-user rate limit on uploads — keeps a curious student from
+    # accidentally exhausting an instructor's quota by uploading the
+    # same PDF dozens of times.
+    await enforce_user_limits(user_id, "upload", UPLOAD_WINDOWS)
     roles = await get_user_roles(session)
 
     # Determine the document scope based on uploader's role.

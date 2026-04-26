@@ -27,3 +27,6 @@ supertokens-python>=0.27
 
 # Object storage (Cloudflare R2 — S3-compatible)
 boto3>=1.34
+
+# Redis (rate limiting + read cache; shared singleton, AOF-persisted)
+redis>=5.0

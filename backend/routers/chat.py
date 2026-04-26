@@ -24,6 +24,22 @@ from backend.schemas.chat import (
     MessageListResponse,
     MessageResponse,
 )
+from backend.services.cache import (
+    TTL_CONV_LIST,
+    TTL_MESSAGES,
+    cache_get,
+    cache_invalidate_prefix,
+    cache_set,
+    conv_list_key,
+    conv_list_prefix,
+    messages_key,
+    messages_prefix,
+)
+from backend.services.rate_limiter import (
+    FEEDBACK_WINDOWS,
+    rate_limit_chat,
+    rate_limit_user,
+)
 
 router = APIRouter()
 
@@ -50,7 +66,7 @@ def _verify_conversation_ownership(
 @router.post("/api/chat-messages")
 async def chat_messages(
     body: ChatRequest,
-    session: SessionContainer = Depends(require_auth()),
+    session: SessionContainer = Depends(rate_limit_chat()),
     settings: Settings = Depends(get_settings),
 ):
     """Accept a chat message and return an SSE streaming response."""
@@ -68,6 +84,9 @@ async def chat_messages(
     async def event_stream():
         # Create DB session inside the stream so it lives as long as streaming does
         db = SessionLocal()
+        # Track the conversation_id surfaced in the SSE payloads so we can
+        # invalidate just-the-right cache pages once streaming finishes.
+        seen_conv_id: str | None = None
         try:
             async for event in process_chat_message(
                 query=body.query,
@@ -79,9 +98,28 @@ async def chat_messages(
                 llm=llm,
                 settings=settings,
             ):
+                # Sniff the JSON payload (cheap — one parse per event) so
+                # the wrapper can do cache invalidation without coupling
+                # the orchestrator to Redis.
+                try:
+                    payload = event.split("data: ", 1)[1].strip()
+                    if payload:
+                        import json as _json
+                        decoded = _json.loads(payload)
+                        cid = decoded.get("conversation_id")
+                        if cid:
+                            seen_conv_id = cid
+                except Exception:
+                    pass
                 yield event
         finally:
             db.close()
+            # Stale views: the user's sidebar AND every page of this
+            # conversation's message list. Drop them so the next read
+            # rehydrates from Postgres.
+            await cache_invalidate_prefix(conv_list_prefix(user_id))
+            if seen_conv_id:
+                await cache_invalidate_prefix(messages_prefix(seen_conv_id))
 
     return StreamingResponse(
         event_stream(),
@@ -99,7 +137,7 @@ async def chat_messages(
 # ------------------------------------------------------------------
 
 @router.get("/api/conversations", response_model=ConversationListResponse)
-def list_conversations(
+async def list_conversations(
     session: SessionContainer = Depends(require_auth()),
     course_id: str = Query(None),
     limit: int = Query(20, ge=1, le=100),
@@ -107,6 +145,13 @@ def list_conversations(
 ):
     """List conversations for the authenticated user, optionally filtered by course."""
     user_id = session.get_user_id()
+
+    # Cache-aside: sidebar refreshes are the most common read on this app.
+    key = conv_list_key(user_id, course_id, limit)
+    cached = await cache_get(key)
+    if cached is not None:
+        return ConversationListResponse(**cached)
+
     q = db.query(Conversation).filter(Conversation.user_id == user_id)
     if course_id:
         q = q.filter(Conversation.course_id == course_id)
@@ -115,7 +160,7 @@ def list_conversations(
     total = q.count()
     conversations = q.limit(limit).all()
 
-    return ConversationListResponse(
+    payload = ConversationListResponse(
         data=[
             ConversationResponse(
                 id=str(c.id),
@@ -128,6 +173,8 @@ def list_conversations(
         ],
         has_more=total > limit,
     )
+    await cache_set(key, payload.model_dump(), ttl=TTL_CONV_LIST)
+    return payload
 
 
 # ------------------------------------------------------------------
@@ -167,7 +214,7 @@ def get_conversation(
 # ------------------------------------------------------------------
 
 @router.delete("/api/conversations/{conversation_id}")
-def delete_conversation(
+async def delete_conversation(
     conversation_id: str,
     session: SessionContainer = Depends(require_auth()),
     db: DBSession = Depends(get_db),
@@ -187,6 +234,11 @@ def delete_conversation(
 
     db.delete(conv)
     db.commit()
+
+    # Drop every cached sidebar view for this user and every cached
+    # message page for the deleted conversation.
+    await cache_invalidate_prefix(conv_list_prefix(user_id))
+    await cache_invalidate_prefix(messages_prefix(conversation_id))
     return {"result": "success"}
 
 
@@ -195,7 +247,7 @@ def delete_conversation(
 # ------------------------------------------------------------------
 
 @router.get("/api/messages", response_model=MessageListResponse)
-def list_messages(
+async def list_messages(
     conversation_id: str = Query(...),
     session: SessionContainer = Depends(require_auth()),
     limit: int = Query(20, ge=1, le=100),
@@ -209,11 +261,17 @@ def list_messages(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid conversation ID")
 
-    # Verify ownership
+    # Verify ownership BEFORE checking the cache so that another user
+    # sending the same conversation_id can never read a cached page.
     conv = db.query(Conversation).filter(Conversation.id == conv_uuid).first()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     _verify_conversation_ownership(conv, user_id)
+
+    cache_key = messages_key(conversation_id, first_id, limit)
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return MessageListResponse(**cached)
 
     q = db.query(Message).filter(Message.conversation_id == conv_uuid)
 
@@ -235,7 +293,7 @@ def list_messages(
     # Return in chronological order
     messages.reverse()
 
-    return MessageListResponse(
+    payload = MessageListResponse(
         data=[
             MessageResponse(
                 id=str(m.id),
@@ -250,6 +308,8 @@ def list_messages(
         ],
         has_more=total > limit,
     )
+    await cache_set(cache_key, payload.model_dump(), ttl=TTL_MESSAGES)
+    return payload
 
 
 def _coerce_retriever_resources(raw) -> list[dict] | None:
@@ -276,10 +336,10 @@ def _coerce_retriever_resources(raw) -> list[dict] | None:
 # ------------------------------------------------------------------
 
 @router.post("/api/messages/{message_id}/feedbacks")
-def submit_feedback(
+async def submit_feedback(
     message_id: str,
     body: FeedbackRequest,
-    session: SessionContainer = Depends(require_auth()),
+    session: SessionContainer = Depends(rate_limit_user("feedback", FEEDBACK_WINDOWS)),
     db: DBSession = Depends(get_db),
 ):
     """Store a like/dislike rating on a message (upsert — last value wins)."""
@@ -300,4 +360,6 @@ def submit_feedback(
     msg.feedback = rating
     db.commit()
 
+    # Cached message list now has a stale feedback value; drop it.
+    await cache_invalidate_prefix(messages_prefix(str(msg.conversation_id)))
     return {"result": "success", "feedback": rating}
