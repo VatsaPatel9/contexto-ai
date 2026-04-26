@@ -455,17 +455,18 @@
     showConfirm = true;
   }
 
-  async function handleEnrollMember() {
+  async function handleEnrollMember(identifier?: string, label?: string) {
     if (!selectedCourse) return;
-    const id = memberIdentifier.trim();
+    const id = (identifier ?? memberIdentifier).trim();
     if (!id) {
-      toast.error('Enter an email or display name');
+      toast.error('Pick a user from the list or type an email');
       return;
     }
     enrolling = true;
     try {
-      await enrollMember(selectedCourse.course_id, id, memberStudyId.trim() || undefined);
-      toast.success(`Enrolled "${id}"`);
+      const enrolled = await enrollMember(selectedCourse.course_id, id, memberStudyId.trim() || undefined);
+      const shown = label || enrolled.display_name || enrolled.email || id;
+      toast.success(`Enrolled ${shown}`);
       memberIdentifier = '';
       memberStudyId = '';
       courseMembers = await listCourseMembers(selectedCourse.course_id);
@@ -476,6 +477,26 @@
       enrolling = false;
     }
   }
+
+  // Candidate users for the enroll picker: every known user except the
+  // caller and anyone already enrolled in the selected course, filtered by
+  // the search box. Uses the existing usersByRole + userNameCache —
+  // no extra API call needed.
+  let enrollCandidates = $derived(() => {
+    const enrolledIds = new Set(courseMembers.map((m) => m.user_id));
+    const callerId = $authStore.userId;
+    const q = memberIdentifier.trim().toLowerCase();
+    return allUserIds()
+      .filter((id) => id !== callerId && !enrolledIds.has(id))
+      .filter((id) => {
+        if (!q) return true;
+        if (id.toLowerCase().includes(q)) return true;
+        const cached = userNameCache[id];
+        if (cached?.displayName?.toLowerCase().includes(q)) return true;
+        if (cached?.email?.toLowerCase().includes(q)) return true;
+        return false;
+      });
+  });
 
   async function handleUnenrollMember(member: CourseMember) {
     if (!selectedCourse) return;
@@ -1020,7 +1041,7 @@
 
               <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                  <input type="text" bind:value={memberIdentifier} placeholder="Email or display name"
+                  <input type="text" bind:value={memberIdentifier} placeholder="Search by email, name, or ID"
                          class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
                                 bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
                                 focus:ring-1 focus:ring-blue-500 transition" />
@@ -1029,12 +1050,59 @@
                                 bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
                                 focus:ring-1 focus:ring-blue-500 transition" />
                 </div>
-                <div class="flex justify-end">
-                  <button onclick={handleEnrollMember} disabled={enrolling}
-                          class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50">
-                    {enrolling ? 'Adding...' : 'Add member'}
-                  </button>
+
+                <!-- Scrollable picker: ~10 visible rows, click-to-add -->
+                <div class="max-h-72 overflow-y-auto rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
+                  {#if enrollCandidates().length === 0}
+                    <p class="px-3 py-6 text-xs text-center text-gray-400">
+                      {memberIdentifier.trim() ? 'No matching users.' : 'No users available to enroll.'}
+                    </p>
+                  {:else}
+                    {#each enrollCandidates() as candId (candId)}
+                      {@const cached = userNameCache[candId]}
+                      {@const label = cached?.displayName || cached?.email?.split('@')[0] || candId.slice(0, 8) + '...'}
+                      {@const initials = (cached?.displayName || cached?.email || candId).slice(0, 2).toUpperCase()}
+                      <div class="flex items-center gap-2.5 px-3 py-2 border-b last:border-b-0 border-gray-100 dark:border-gray-800
+                                  hover:bg-white dark:hover:bg-gray-800 transition">
+                        <div class="shrink-0 size-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
+                                    flex items-center justify-center text-white text-[10px] font-bold uppercase">
+                          {initials}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                          <div class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{label}</div>
+                          <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {#if cached?.email && cached?.displayName}
+                              <span class="text-[10px] text-gray-400 truncate">{cached.email}</span>
+                            {/if}
+                            {#each getUserRoleDisplay(candId) as role}
+                              <span class="px-1 py-0 rounded text-[8px] font-medium {getRoleBadgeColor(role)}">
+                                {role.replace('_', ' ')}
+                              </span>
+                            {/each}
+                          </div>
+                        </div>
+                        <button
+                          onclick={() => handleEnrollMember(cached?.email || cached?.displayName || candId, label)}
+                          disabled={enrolling}
+                          class="shrink-0 text-[11px] px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100
+                                 dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/40 transition font-medium
+                                 disabled:opacity-50">
+                          Add
+                        </button>
+                      </div>
+                    {/each}
+                  {/if}
                 </div>
+
+                <!-- Manual fallback for users not in the list -->
+                {#if memberIdentifier.trim() && enrollCandidates().length === 0}
+                  <div class="flex justify-end mt-2">
+                    <button onclick={() => handleEnrollMember()} disabled={enrolling}
+                            class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50">
+                      {enrolling ? 'Adding...' : `Add "${memberIdentifier.trim()}"`}
+                    </button>
+                  </div>
+                {/if}
               </div>
 
               <div>

@@ -60,57 +60,41 @@ class BanRequest(BaseModel):
 async def list_users(
     role: str | None = None,
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
-    db: DBSession = Depends(get_db),
 ):
     """List users, optionally filtered by role.
 
-    super_admin sees every user. admin sees only users enrolled in courses
-    they created (and never any other admin / super_admin).
+    Admins cannot see super_admin users. Only super_admins can see other super_admins.
     """
     from backend.auth.dependencies import get_user_roles as _get_caller_roles
-    caller_id = session.get_user_id()
     caller_roles = await _get_caller_roles(session)
     is_super_admin = SUPER_ADMIN in caller_roles
 
-    # For non-super-admins, build the visibility scope:
-    # - hidden: every super_admin and every admin (other admins are off-limits)
-    # - allowed: users enrolled in courses the caller created
+    # Get super_admin user IDs so we can filter them out for non-super_admins
     hidden_user_ids: set[str] = set()
-    allowed_user_ids: set[str] | None = None  # None = no scope filter (super_admin)
     if not is_super_admin:
-        for hidden_role in (SUPER_ADMIN, ADMIN):
-            r = await get_users_that_have_role("public", hidden_role)
-            if not isinstance(r, UnknownRoleError):
-                hidden_user_ids.update(r.users)
-        # Always allow the caller themselves to remain visible? No — self-management
-        # lives on the profile page; we already drop the caller from the dropdown.
-        allowed_user_ids = await _admin_scope_user_ids(db, caller_id)
-
-    def _in_scope(user_id: str) -> bool:
-        if user_id in hidden_user_ids:
-            return False
-        if allowed_user_ids is None:
-            return True
-        return user_id in allowed_user_ids
+        sa_result = await get_users_that_have_role("public", SUPER_ADMIN)
+        if not isinstance(sa_result, UnknownRoleError):
+            hidden_user_ids = set(sa_result.users)
 
     if role:
-        # Admins cannot enumerate the super_admin or admin roles.
-        if not is_super_admin and role in (SUPER_ADMIN, ADMIN):
+        # Don't let admins query the super_admin role directly
+        if role == SUPER_ADMIN and not is_super_admin:
             return {"users": []}
         result = await get_users_that_have_role("public", role)
         if isinstance(result, UnknownRoleError):
             raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
-        return {"users": [u for u in result.users if _in_scope(u)]}
+        filtered = [u for u in result.users if u not in hidden_user_ids]
+        return {"users": filtered}
 
     roles_to_list = ALL_ROLES + [USER_UPLOADER]
     if not is_super_admin:
-        roles_to_list = [r for r in roles_to_list if r not in (SUPER_ADMIN, ADMIN)]
+        roles_to_list = [r for r in roles_to_list if r != SUPER_ADMIN]
 
     all_users: dict[str, list[str]] = {}
     for r in roles_to_list:
         result = await get_users_that_have_role("public", r)
         if not isinstance(result, UnknownRoleError):
-            filtered = [u for u in result.users if _in_scope(u)]
+            filtered = [u for u in result.users if u not in hidden_user_ids]
             if filtered:
                 all_users[r] = filtered
     return {"users_by_role": all_users}

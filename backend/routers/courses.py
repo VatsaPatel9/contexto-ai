@@ -67,16 +67,24 @@ class CourseMember(BaseModel):
 # ---------------------------------------------------------------------------
 
 async def _resolve_user_id(identifier: str, db: DBSession) -> Optional[str]:
-    """Resolve an email or display_name to a SuperTokens user_id.
+    """Resolve a user_id, email, or display_name to a SuperTokens user_id.
 
-    Tries email first (via SuperTokens), then falls back to display_name
-    (via UserProfile). Returns None if no user matches.
+    Returns None if no user matches.
     """
     identifier = identifier.strip()
     if not identifier:
         return None
 
-    # 1) Try by email (SuperTokens)
+    # 1) Direct user_id (the picker sends this when clicking a candidate)
+    try:
+        from supertokens_python.asyncio import get_user
+        user = await get_user(identifier)
+        if user is not None:
+            return user.id
+    except Exception:
+        pass
+
+    # 2) By email (SuperTokens)
     if "@" in identifier:
         try:
             from supertokens_python.asyncio import list_users_by_account_info
@@ -92,7 +100,7 @@ async def _resolve_user_id(identifier: str, db: DBSession) -> Optional[str]:
         except Exception:
             pass
 
-    # 2) Try by display_name (case-insensitive exact match)
+    # 3) By display_name (case-insensitive exact match)
     profile = (
         db.query(UserProfile)
         .filter(UserProfile.display_name.ilike(identifier))
