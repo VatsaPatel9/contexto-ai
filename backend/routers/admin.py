@@ -176,10 +176,13 @@ async def _assert_can_manage_user(
 async def get_user_roles_endpoint(
     user_id: str,
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
-    db: DBSession = Depends(get_db),
 ):
-    """Get all roles assigned to a user."""
-    await _assert_can_manage_user(session, user_id, db)
+    """Get all roles assigned to a user.
+
+    Read-only: any admin may view any non-super_admin's roles. Scope only
+    applies to mutating actions (ban, set-limits).
+    """
+    await _guard_super_admin_target(session, user_id)
     result = await get_roles_for_user("public", user_id)
     return UserRolesResponse(user_id=user_id, roles=result.roles)
 
@@ -230,8 +233,14 @@ async def get_user_profile(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    await _assert_can_manage_user(session, user_id, db)
-    """View a user's profile: display name, email, uploads, tokens, and flag status."""
+    await _guard_super_admin_target(session, user_id)
+    """View a user's profile: display name, email, uploads, tokens, and flag status.
+
+    Read-only: any admin may view any non-super_admin's profile. The
+    user-search dropdown caches display names/emails from this endpoint,
+    so it must work for every visible user. Scope only applies to
+    mutating actions further down.
+    """
     profile = get_or_create_profile(db, user_id)
     db.commit()
 
@@ -374,16 +383,9 @@ async def list_violations(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    """List flagged users (super_admin: all; admin: only their course members)."""
-    from backend.auth.dependencies import get_user_roles as _roles
-    caller_roles = await _roles(session)
+    """List all users with active violations (read-only)."""
     flag_svc = UserFlagService(db)
     flagged = flag_svc.get_flagged_users()
-
-    if SUPER_ADMIN not in caller_roles:
-        caller_id = session.get_user_id()
-        scope = await _admin_scope_user_ids(db, caller_id)
-        flagged = [f for f in flagged if f.user_id in scope]
 
     return {
         "violations": [
@@ -408,8 +410,8 @@ async def get_user_violations(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    await _assert_can_manage_user(session, user_id, db)
-    """Get detailed violation info for a specific user."""
+    await _guard_super_admin_target(session, user_id)
+    """Get detailed violation info for a specific user (read-only)."""
     flag_svc = UserFlagService(db)
     flag = flag_svc.get_flag(user_id)
 
