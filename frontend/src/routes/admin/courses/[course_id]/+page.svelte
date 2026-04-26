@@ -20,6 +20,7 @@
     type Course,
     type CourseMember,
   } from '$lib/apis/admin';
+  import DocumentManager from '$lib/components/admin/DocumentManager.svelte';
 
   // Route param
   let courseId = $derived(($page.params as Record<string, string>).course_id);
@@ -43,6 +44,14 @@
 
   let usersByRole = $derived($usersByRoleStore);
   let userNameCache = $derived($userNameCacheStore);
+
+  // Course-detail upload UI is reserved for the owning admin. Super_admin
+  // uploads belong on /admin/baseline because they're system-wide and we
+  // don't want to mix system content into per-course datasets.
+  let isSuperAdmin = $derived($authStore.roles.includes('super_admin'));
+  let canUploadHere = $derived(
+    course !== null && !isSuperAdmin && course.created_by === $authStore.userId,
+  );
 
   function getUserRoleDisplay(userId: string): string[] {
     const roles: string[] = [];
@@ -224,6 +233,15 @@
           </button>
         {/if}
       </div>
+
+      <!-- Course materials (only for the admin who owns the course) -->
+      {#if canUploadHere && course}
+        <DocumentManager
+          courseId={course.course_id}
+          title="Course materials"
+          description="Documents you upload here are visible only to students enrolled in this course."
+        />
+      {/if}
 
       <!-- Add member -->
       <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">

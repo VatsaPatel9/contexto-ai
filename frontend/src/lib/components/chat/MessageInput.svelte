@@ -30,12 +30,10 @@
   };
   let attachedFiles = $state<AttachedFile[]>([]);
 
-  // Check if user has upload permission
-  let canUpload = $derived(
-    $authStore.roles.includes('user_uploader') ||
-    $authStore.roles.includes('admin') ||
-    $authStore.roles.includes('super_admin')
-  );
+  // Only learners explicitly granted the user_uploader role can upload
+  // from the chat surface. Admin/super_admin uploads belong on the
+  // course-detail page and the baseline-materials page respectively.
+  let canUpload = $derived($authStore.roles.includes('user_uploader'));
 
   // True while any attached file is still being uploaded/processed by the backend.
   // Chat input is disabled until the upload resolves (success or error).

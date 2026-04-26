@@ -26,16 +26,25 @@
   // admin nav (Users / Courses / Violations) instead of the chat list, so
   // there's one sidebar — never two stacked panels.
   let isAdminRoute = $derived($page.url.pathname.startsWith('/admin'));
+  let isSuperAdmin = $derived($authStore.roles.includes('super_admin'));
   // The course detail route (/admin/courses/:id) is conceptually still
   // the Courses tab, so highlight it when on any /admin/courses/* path.
+  // /admin/baseline is its own thing — only super_admins ever see it.
   let activeAdminTab = $derived(
-    $page.url.pathname.startsWith('/admin/courses')
-      ? 'courses'
-      : $page.url.searchParams.get('tab') || 'users',
+    $page.url.pathname.startsWith('/admin/baseline')
+      ? 'baseline'
+      : $page.url.pathname.startsWith('/admin/courses')
+        ? 'courses'
+        : $page.url.searchParams.get('tab') || 'users',
   );
 
   function gotoAdminTab(tab: 'users' | 'courses' | 'violations') {
     goto(`/admin?tab=${tab}`);
+    if ($mobile) showSidebar.set(false);
+  }
+
+  function gotoBaseline() {
+    goto('/admin/baseline');
     if ($mobile) showSidebar.set(false);
   }
 
@@ -210,6 +219,22 @@
             <span class="px-1.5 py-0.5 text-[10px] rounded-full bg-red-500 text-white">{$adminCounts.violations}</span>
           {/if}
         </button>
+
+        {#if isSuperAdmin}
+          <div class="h-px bg-gray-100 dark:bg-gray-850 my-2 mx-2"></div>
+          <button
+            onclick={gotoBaseline}
+            class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                   {activeAdminTab === 'baseline'
+                     ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                     : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+            </svg>
+            Baseline
+          </button>
+        {/if}
       </nav>
     {:else}
       <!-- Chat list -->
