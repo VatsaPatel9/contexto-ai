@@ -294,87 +294,101 @@
       <p class="text-xs text-gray-400">Upload PDFs, Word, text, or spreadsheet files to get started.</p>
     </div>
   {:else}
-    <div class="space-y-1.5">
+    <!-- 4 tiles per row at lg+, 2 at sm/md, 1 on phones. Names truncate
+         with a native tooltip showing the full filename on hover so the
+         action buttons always fit. -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
       {#each docs as doc (doc.id)}
         {@const isReady = doc.status === 'ready' && !doc.deleted_at && !doc.pending && !doc.failed}
         {@const isInFlight = doc.pending || (doc.status === 'processing' && !doc.deleted_at)}
-        <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg group transition
+        <div class="flex flex-col gap-2 p-3 rounded-lg transition
                     {doc.failed
                       ? 'bg-red-50/50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/40'
                       : doc.deleted_at
                         ? 'bg-red-50/50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30'
                         : isInFlight
                           ? 'bg-blue-50/40 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900/30'
-                          : 'bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700'}">
-          <span class="text-base shrink-0 relative">
-            {getFileIcon(doc.title)}
-            {#if isInFlight}
-              <span class="absolute -bottom-1 -right-1 size-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin bg-white dark:bg-gray-900"></span>
-            {/if}
-          </span>
-          <div class="flex-1 min-w-0">
-            <p class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium
-                      {doc.deleted_at ? 'line-through opacity-60' : ''}">{doc.title}</p>
-            <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-              <span class="px-1.5 py-0 rounded text-[9px] font-medium {statusBadge(doc.status)}">
-                {doc.pending ? 'uploading' : doc.status}
-              </span>
-              {#if isReady}
-                <span class="text-[10px] text-gray-400">{doc.chunk_count} chunks</span>
+                          : 'bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-700'}">
+
+          <!-- Title row: icon + truncated name (native tooltip on hover) -->
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-base shrink-0 relative">
+              {getFileIcon(doc.title)}
+              {#if isInFlight}
+                <span class="absolute -bottom-1 -right-1 size-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin bg-white dark:bg-gray-900"></span>
               {/if}
-              {#if doc.failed && doc.error_message}
-                <span class="text-[10px] text-red-500 truncate" title={doc.error_message}>{doc.error_message}</span>
-              {/if}
-              {#if doc.deleted_at}
-                <span class="text-[10px] text-red-400">deleted</span>
-              {/if}
-            </div>
+            </span>
+            <p title={doc.title}
+               class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium min-w-0
+                      {doc.deleted_at ? 'line-through opacity-60' : ''}">
+              {doc.title}
+            </p>
           </div>
 
-          {#if isReady}
-            <button onclick={() => viewDoc(doc)}
-                    title="View"
-                    aria-label="View document"
-                    class="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50
-                           dark:hover:text-blue-400 dark:hover:bg-blue-900/20 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
-            <button onclick={() => downloadDoc(doc)}
-                    title="Download"
-                    aria-label="Download document"
-                    class="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50
-                           dark:hover:text-blue-400 dark:hover:bg-blue-900/20 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-            </button>
-            <button onclick={() => askDelete(doc)}
-                    title="Delete"
-                    aria-label="Delete document"
-                    class="shrink-0 p-1.5 rounded-lg opacity-0 group-hover:opacity-100
-                           hover:bg-red-50 dark:hover:bg-red-900/20
-                           text-gray-400 hover:text-red-500 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
-          {:else if doc.failed}
-            <button onclick={() => dismissFailed(doc)}
-                    title="Dismiss"
-                    aria-label="Dismiss failed upload"
-                    class="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          {/if}
+          <!-- Meta row: status badge + chunks/error -->
+          <div class="flex items-center gap-1.5 flex-wrap min-h-[18px]">
+            <span class="px-1.5 py-0 rounded text-[9px] font-medium {statusBadge(doc.status)}">
+              {doc.pending ? 'uploading' : doc.status}
+            </span>
+            {#if isReady}
+              <span class="text-[10px] text-gray-400">{doc.chunk_count} chunks</span>
+            {/if}
+            {#if doc.failed && doc.error_message}
+              <span class="text-[10px] text-red-500 truncate" title={doc.error_message}>{doc.error_message}</span>
+            {/if}
+            {#if doc.deleted_at}
+              <span class="text-[10px] text-red-400">deleted</span>
+            {/if}
+          </div>
+
+          <!-- Actions row: pinned to bottom of tile -->
+          <div class="flex items-center justify-end gap-1 mt-auto pt-1 border-t border-gray-100 dark:border-gray-700/50">
+            {#if isReady}
+              <button onclick={() => viewDoc(doc)}
+                      title="View"
+                      aria-label="View document"
+                      class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50
+                             dark:hover:text-blue-400 dark:hover:bg-blue-900/20 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+              <button onclick={() => downloadDoc(doc)}
+                      title="Download"
+                      aria-label="Download document"
+                      class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50
+                             dark:hover:text-blue-400 dark:hover:bg-blue-900/20 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              </button>
+              <button onclick={() => askDelete(doc)}
+                      title="Delete"
+                      aria-label="Delete document"
+                      class="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20
+                             text-gray-400 hover:text-red-500 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            {:else if doc.failed}
+              <button onclick={() => dismissFailed(doc)}
+                      title="Dismiss"
+                      aria-label="Dismiss failed upload"
+                      class="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            {:else if isInFlight}
+              <span class="text-[10px] text-blue-500 dark:text-blue-400 px-1">Processing…</span>
+            {/if}
+          </div>
         </div>
       {/each}
     </div>
