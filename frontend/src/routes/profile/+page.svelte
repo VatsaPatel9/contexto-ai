@@ -2,8 +2,8 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
-  import { authStore, getDisplayLabel } from '$lib/stores/auth';
-  import { session } from '$lib/stores';
+  import { authStore, getDisplayLabel, logout } from '$lib/stores/auth';
+  import { session, conversations, conversationsLoaded } from '$lib/stores';
   import {
     listDocuments,
     deleteDocument,
@@ -135,6 +135,42 @@
   let activeDocuments = $derived(documents.filter((d) => !d.deleted_at));
   let docsExpanded = $state(false);
   let visibleDocuments = $derived(docsExpanded ? activeDocuments : activeDocuments.slice(0, 3));
+
+  // ── Delete account ───────────────────────────────────────────────
+  // Confirmation pattern: user must type their own email exactly to
+  // arm the destructive button. No password re-entry — the active
+  // session is already proof of identity.
+  let showDeleteConfirm = $state(false);
+  let deleteConfirmText = $state('');
+  let deleting = $state(false);
+  let deleteEnabled = $derived(
+    !!profile?.email && deleteConfirmText.trim().toLowerCase() === profile.email.toLowerCase()
+  );
+
+  async function handleDeleteAccount() {
+    if (!deleteEnabled || deleting) return;
+    deleting = true;
+    try {
+      const res = await fetch(`${API_BASE}/api/me`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `Delete failed (${res.status})`);
+      }
+      // Local store cleanup so the next login sees a clean slate even
+      // though the server already revoked the session cookie.
+      conversations.set([]);
+      conversationsLoaded.set(false);
+      try { await logout(); } catch { /* session is already revoked server-side */ }
+      toast.success('Account deleted');
+      goto('/login');
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to delete account');
+      deleting = false;
+    }
+  }
 </script>
 
 <div class="flex flex-col h-full">
@@ -339,6 +375,20 @@
             </p>
           {/if}
         </div>
+
+        <!-- Danger Zone -->
+        <div class="rounded-2xl border border-red-200 dark:border-red-900/40 bg-red-50/40 dark:bg-red-900/10 p-5">
+          <h2 class="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-2">Danger zone</h2>
+          <p class="text-sm text-gray-700 dark:text-gray-300 mb-1">Delete my account</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
+            Permanently removes your sign-in, your private uploads, your conversations, and your enrollments. This cannot be undone.
+          </p>
+          <button
+            onclick={() => { deleteConfirmText = ''; showDeleteConfirm = true; }}
+            class="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 transition font-medium">
+            Delete account
+          </button>
+        </div>
       </div>
     {:else}
       <div class="flex items-center justify-center h-48">
@@ -347,3 +397,52 @@
     {/if}
   </div>
 </div>
+
+{#if showDeleteConfirm && profile}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"
+       onclick={() => { if (!deleting) showDeleteConfirm = false; }}>
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl max-w-md w-full p-6"
+         onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-2">
+        Delete this account?
+      </h3>
+      <p class="text-sm text-gray-700 dark:text-gray-300 mb-2">
+        This permanently removes your sign-in, private uploads, conversations,
+        and enrollments. Course materials and baseline content stay intact.
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Type your email to confirm:
+        <span class="font-mono text-gray-700 dark:text-gray-200">{profile.email}</span>
+      </p>
+      <input
+        type="email"
+        autocomplete="off"
+        bind:value={deleteConfirmText}
+        disabled={deleting}
+        placeholder={profile.email ?? ''}
+        class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+               bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+               focus:ring-1 focus:ring-red-500 transition mb-4 disabled:opacity-50"
+      />
+      <div class="flex gap-2 justify-end">
+        <button
+          onclick={() => { if (!deleting) showDeleteConfirm = false; }}
+          disabled={deleting}
+          class="px-3.5 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700
+                 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition
+                 disabled:opacity-50">
+          Cancel
+        </button>
+        <button
+          onclick={handleDeleteAccount}
+          disabled={!deleteEnabled || deleting}
+          class="px-3.5 py-1.5 text-sm rounded-full bg-red-600 text-white hover:bg-red-700 transition
+                 disabled:opacity-50 disabled:cursor-not-allowed">
+          {deleting ? 'Deleting…' : 'Delete account'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
