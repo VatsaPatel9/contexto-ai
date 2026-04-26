@@ -17,6 +17,10 @@ export type UploadedDocument = {
   uploaded_by: string;
   visibility: 'global' | 'private';
   deleted_at: string | null;
+  // Pre-signed download URL — returned by both the upload response and
+  // the list endpoint. May be ``null`` if the file is missing from
+  // object storage.
+  download_url?: string | null;
 };
 
 export async function uploadDocument(
