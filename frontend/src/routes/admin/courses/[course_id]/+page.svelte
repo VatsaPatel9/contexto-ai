@@ -45,12 +45,16 @@
   let usersByRole = $derived($usersByRoleStore);
   let userNameCache = $derived($userNameCacheStore);
 
-  // Course-detail upload UI is reserved for the owning admin. Super_admin
-  // uploads belong on /admin/baseline because they're system-wide and we
-  // don't want to mix system content into per-course datasets.
+  // Super_admins can audit any course's materials (view + delete) but
+  // shouldn't upload here — their uploads belong on /admin/baseline so
+  // system-wide content stays separate from per-course datasets. Course
+  // admins see the full panel only on courses they own.
   let isSuperAdmin = $derived($authStore.roles.includes('super_admin'));
   let canUploadHere = $derived(
     course !== null && !isSuperAdmin && course.created_by === $authStore.userId,
+  );
+  let canSeeMaterials = $derived(
+    course !== null && (isSuperAdmin || canUploadHere),
   );
 
   function getUserRoleDisplay(userId: string): string[] {
@@ -234,12 +238,17 @@
         {/if}
       </div>
 
-      <!-- Course materials (only for the admin who owns the course) -->
-      {#if canUploadHere && course}
+      <!-- Course materials. Owning admin gets full panel (upload + delete);
+           super_admins get a read-only-upload variant so they can audit and
+           remove materials without polluting the course dataset. -->
+      {#if canSeeMaterials && course}
         <DocumentManager
           courseId={course.course_id}
           title="Course materials"
-          description="Documents you upload here are visible only to students enrolled in this course."
+          description={canUploadHere
+            ? 'Documents you upload here are visible only to students enrolled in this course.'
+            : 'Materials uploaded by the course admin. Upload new system-wide content via Baseline.'}
+          canUpload={canUploadHere}
         />
       {/if}
 

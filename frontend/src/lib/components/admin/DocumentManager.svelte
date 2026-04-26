@@ -29,10 +29,17 @@
     courseId,
     title = 'Materials',
     description = '',
+    canUpload = true,
   }: {
     courseId: string;
     title?: string;
     description?: string;
+    // When false, the upload button is hidden but view / download /
+    // delete still work. Used on the course-detail page for
+    // super_admins, who can audit and remove course materials but
+    // shouldn't add to a per-course dataset (their uploads live on
+    // /admin/baseline).
+    canUpload?: boolean;
   } = $props();
 
   /** Local-only flags layered on top of ``UploadedDocument``. */
@@ -271,25 +278,27 @@
           {inFlightCount} processing
         </span>
       {/if}
-      <input
-        bind:this={fileInput}
-        type="file"
-        multiple
-        accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.ppt,.pptx"
-        onchange={(e) => handleFiles((e.currentTarget as HTMLInputElement).files)}
-        class="hidden"
-      />
-      <button
-        onclick={() => fileInput?.click()}
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg
-               bg-blue-600 text-white hover:bg-blue-700 transition font-medium"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19" />
-          <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-        Upload
-      </button>
+      {#if canUpload}
+        <input
+          bind:this={fileInput}
+          type="file"
+          multiple
+          accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx,.xls,.ppt,.pptx"
+          onchange={(e) => handleFiles((e.currentTarget as HTMLInputElement).files)}
+          class="hidden"
+        />
+        <button
+          onclick={() => fileInput?.click()}
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg
+                 bg-blue-600 text-white hover:bg-blue-700 transition font-medium"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          Upload
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -298,7 +307,11 @@
   {:else if docs.length === 0}
     <div class="rounded-xl border border-dashed border-gray-200 dark:border-gray-700 px-4 py-8 text-center">
       <p class="text-sm text-gray-400 mb-1">No materials yet.</p>
-      <p class="text-xs text-gray-400">Upload PDFs, Word, text, or spreadsheet files to get started.</p>
+      {#if canUpload}
+        <p class="text-xs text-gray-400">Upload PDFs, Word, text, or spreadsheet files to get started.</p>
+      {:else}
+        <p class="text-xs text-gray-400">The course owner hasn't uploaded any materials yet.</p>
+      {/if}
     </div>
   {:else}
     <!-- 4 tiles per row at lg+, 2 at sm/md, 1 on phones. Names truncate
