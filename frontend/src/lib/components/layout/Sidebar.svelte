@@ -11,6 +11,7 @@
     showSidebar,
     mobile,
     currentChatId,
+    newChatNonce,
     adminCounts,
     type Conversation
   } from '$lib/stores';
@@ -69,6 +70,11 @@
         updatedAt: c.updated_at * 1000
       }));
 
+      // Sort newest-first so first paint matches what user expects.
+      // Subsequent updates keep this invariant via the move-to-top in
+      // ChatWindow's send / message_end handlers.
+      mapped.sort((a, b) => b.updatedAt - a.updatedAt);
+
       conversations.set(mapped);
       conversationsLoaded.set(true);
     } catch {
@@ -78,6 +84,11 @@
 
   function newChat() {
     currentChatId.set(null);
+    // Bump the nonce so /chat keys its <ChatWindow> on a new value and
+    // forces a remount. Without this, clicking + while already on /chat
+    // would no-op (goto('/chat') doesn't navigate to the same URL),
+    // leaving stale input / scroll / mid-stream state behind.
+    newChatNonce.update((n) => n + 1);
     goto('/chat');
     if ($mobile) showSidebar.set(false);
   }

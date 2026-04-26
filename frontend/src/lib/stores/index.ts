@@ -176,6 +176,12 @@ export const conversationsLoaded = writable<boolean>(false);
 
 export const currentChatId = writable<string | null>(null);
 
+// Bumped each time the sidebar "+" button is clicked. The /chat page
+// keys its <ChatWindow> on this so a click always forces a fresh
+// remount — even when the user is already on /chat and goto('/chat')
+// would otherwise no-op.
+export const newChatNonce = writable<number>(0);
+
 // ── UI State ───────────────────────────────────────────────────────────
 
 export const mobile = writable<boolean>(false);

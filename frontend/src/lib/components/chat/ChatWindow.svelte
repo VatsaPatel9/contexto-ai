@@ -187,6 +187,22 @@
     messages = [...messages, userMsg, assistantMsg];
     loading = true;
 
+    // Bump this thread to the top of the sidebar immediately on send.
+    // No-op for brand-new chats (no chatId yet) — hydrateIfNew prepends
+    // those when the backend returns a conversation_id.
+    if (chatId) {
+      const activeId = chatId;
+      conversations.update((list) => {
+        const idx = list.findIndex((c) => c.id === activeId);
+        if (idx <= 0) return list;
+        const next = [...list];
+        const [moved] = next.splice(idx, 1);
+        moved.updatedAt = Date.now();
+        next.unshift(moved);
+        return next;
+      });
+    }
+
     await tick();
     if (messagesContainer) scrollToBottom(messagesContainer);
 
