@@ -507,18 +507,18 @@ async def process_chat_message(
     # ------------------------------------------------------------------
     # Only sample topic previews from a dataset the user is allowed to read,
     # otherwise we'd leak course content to unenrolled users.
-    has_content = False
+    has_course_content = False
     topic_snippets: list[str] = []
     if dataset and effective_dataset_id:
         try:
             from backend.models.dataset import Document
-            has_content = (
+            has_course_content = (
                 db.query(Document)
                 .filter(Document.dataset_id == dataset.id, Document.deleted_at.is_(None), Document.status == "ready")
                 .first()
             ) is not None
 
-            if has_content:
+            if has_course_content:
                 # Grab the first ~100 chars from a few diverse segments for topic awareness
                 sample_rows = (
                     db.query(DocumentSegment.content)
@@ -531,8 +531,29 @@ async def process_chat_message(
         except Exception:
             pass
 
+    # Baseline content is system-wide — every learner can reach it
+    # regardless of enrollment. So when judging whether the student
+    # has *anything* to ask about, we have to count baseline too.
+    # Otherwise we say "no materials uploaded" while baseline docs
+    # are sitting right there, and the student's previous turn just
+    # cited one of them.
+    has_baseline_content = False
+    try:
+        from backend.models.dataset import Document
+        has_baseline_content = (
+            db.query(Document)
+            .filter(
+                Document.uploader_role == "baseline",
+                Document.deleted_at.is_(None),
+                Document.status == "ready",
+            )
+            .first()
+        ) is not None
+    except Exception:
+        pass
+
     if msg_type != "meta" and not source_chunks:
-        if has_content and effective_dataset_id:
+        if has_course_content and effective_dataset_id:
             available_docs = _list_available_docs(db, dataset.id)
             if available_docs:
                 docs_block = "\n".join(
@@ -563,6 +584,18 @@ async def process_chat_message(
                     "Try rephrasing your question, or ask your instructor if this "
                     "topic should be added."
                 )
+        elif has_baseline_content:
+            # No course-level content the student can reach (either no
+            # selected course, or the selected course has nothing
+            # uploaded), but baseline docs exist. Don't claim "no
+            # materials uploaded" — that's misleading and contradicts
+            # any earlier turn that cited baseline content. Steer the
+            # student to rephrase or pick a topic from baseline.
+            no_context_msg = (
+                "I couldn't find that topic in the materials I have access to. "
+                "Try rephrasing your question, or ask about something covered in "
+                "your course's uploaded materials."
+            )
         else:
             no_context_msg = (
                 "No course materials have been uploaded yet. "
