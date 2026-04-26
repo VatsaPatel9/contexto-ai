@@ -52,6 +52,19 @@ async def upload_document(
     settings: Settings = Depends(get_settings),
 ):
     """Upload a file, extract text, chunk, embed, and store in the vector DB."""
+    # Hard requirement: every uploaded document must land in R2. Without
+    # object storage we'd insert a Document row with no file_path, which
+    # leaves the file un-viewable / un-downloadable forever. Fail fast
+    # before any DB write so we don't accumulate orphan rows.
+    if not settings.r2_bucket:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Object storage is not configured. Set R2_BUCKET / R2_ACCOUNT_ID / "
+                "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY before uploading."
+            ),
+        )
+
     user_id = session.get_user_id()
     # Per-user rate limit on uploads — keeps a curious student from
     # accidentally exhausting an instructor's quota by uploading the
