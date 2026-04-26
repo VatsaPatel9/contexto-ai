@@ -486,17 +486,27 @@ async def delete_document(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID")
 
-    dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+    # Baseline branch: the super_admin baseline page calls DELETE with the
+    # sentinel course_id "_baseline_", but baseline-tagged docs actually
+    # live in whichever dataset the upload originally hit (no dedicated
+    # "_baseline_" dataset exists). Mirror the list endpoint's branch:
+    # find the doc by id and require it to be baseline-tagged.
+    if course_id == "_baseline_" and is_admin:
+        doc = db.query(Document).filter(Document.id == doc_uuid).first()
+        if not doc or doc.uploader_role != "baseline":
+            raise HTTPException(status_code=404, detail="Document not found")
+    else:
+        dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
-    doc = (
-        db.query(Document)
-        .filter(Document.id == doc_uuid, Document.dataset_id == dataset.id)
-        .first()
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        doc = (
+            db.query(Document)
+            .filter(Document.id == doc_uuid, Document.dataset_id == dataset.id)
+            .first()
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
 
     if doc.deleted_at is not None:
         raise HTTPException(status_code=400, detail="Document already deleted")
