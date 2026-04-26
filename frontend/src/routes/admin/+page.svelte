@@ -6,7 +6,11 @@
   import { authStore } from '$lib/stores/auth';
   import { adminCounts } from '$lib/stores';
   import {
-    listUsers,
+    usersByRole as usersByRoleStore,
+    userNameCache as userNameCacheStore,
+    loadAdminUsers,
+  } from '$lib/stores/admin';
+  import {
     getUserProfile,
     setUploadLimit,
     revokeUploadLimit,
@@ -19,13 +23,9 @@
     listCourses,
     createCourse,
     deleteCourse,
-    listCourseMembers,
-    enrollMember,
-    unenrollMember,
     type UserProfile,
     type Violation,
     type Course,
-    type CourseMember,
   } from '$lib/apis/admin';
   import { session } from '$lib/stores';
   import { listDocuments, deleteDocument, type UploadedDocument } from '$lib/apis/documents';
@@ -42,27 +42,18 @@
     goto(`/admin?tab=${t}`);
   }
 
-  // Courses
+  // Courses (list only — member management lives at /admin/courses/[id])
   let courses = $state<Course[]>([]);
   let coursesLoaded = $state(false);
-  let selectedCourse = $state<Course | null>(null);
-  let courseMembers = $state<CourseMember[]>([]);
-  let membersLoading = $state(false);
 
   let newCourseId = $state('');
   let newCourseName = $state('');
   let newCourseDesc = $state('');
   let creatingCourse = $state(false);
 
-  let memberIdentifier = $state('');
-  let memberStudyId = $state('');
-  let enrolling = $state(false);
-  let showEnrollDropdown = $state(false);
-
-  // Users
-  let usersByRole = $state<Record<string, string[]>>({});
-  // Cache: userId -> { displayName, email } — populated as profiles are loaded
-  let userNameCache = $state<Record<string, { displayName: string | null; email: string | null }>>({});
+  // Users (sourced from the shared admin store; subscribe reactively)
+  let usersByRole = $derived($usersByRoleStore);
+  let userNameCache = $derived($userNameCacheStore);
 
   let allUserIds = $derived(() => {
     const ids = new Set<string>();
@@ -159,43 +150,22 @@
 
   async function loadData() {
     try {
-      const [usersRes, violationsRes] = await Promise.all([
-        listUsers(),
+      const [, violationsRes] = await Promise.all([
+        // force=true so post-mutation refreshes pick up fresh roles, etc.
+        loadAdminUsers(true),
         listViolations(),
       ]);
-      usersByRole = usersRes.users_by_role ?? {};
       violations = violationsRes.violations;
-
-      // Preload names for all users (fire-and-forget, parallel)
-      const allIds = new Set<string>();
-      for (const list of Object.values(usersByRole)) {
-        for (const id of list) allIds.add(id);
-      }
-      preloadUserNames([...allIds]);
     } catch (e: any) {
       toast.error(e.message || 'Failed to load admin data');
     }
   }
 
-  async function preloadUserNames(userIds: string[]) {
-    // Load profiles in parallel (batched) to populate the name cache
-    const promises = userIds
-      .filter((id) => !userNameCache[id])
-      .map(async (id) => {
-        try {
-          const profile = await getUserProfile(id);
-          userNameCache[id] = { displayName: profile.display_name, email: profile.email };
-          userNameCache = { ...userNameCache }; // trigger reactivity
-        } catch {
-          // Ignore — user will just show UUID
-        }
-      });
-    await Promise.all(promises);
-  }
-
   function cacheFromProfile(profile: UserProfile) {
-    userNameCache[profile.user_id] = { displayName: profile.display_name, email: profile.email };
-    userNameCache = { ...userNameCache };
+    userNameCacheStore.update((c) => ({
+      ...c,
+      [profile.user_id]: { displayName: profile.display_name, email: profile.email },
+    }));
   }
 
   async function selectUser(userId: string) {
@@ -413,17 +383,8 @@
     }
   }
 
-  async function selectCourse(course: Course) {
-    selectedCourse = course;
-    courseMembers = [];
-    membersLoading = true;
-    try {
-      courseMembers = await listCourseMembers(course.course_id);
-    } catch (e: any) {
-      toast.error(e.message);
-    } finally {
-      membersLoading = false;
-    }
+  function openCourse(course: Course) {
+    goto(`/admin/courses/${encodeURIComponent(course.course_id)}`);
   }
 
   async function handleCreateCourse() {
@@ -444,9 +405,7 @@
       newCourseId = '';
       newCourseName = '';
       newCourseDesc = '';
-      await loadCourses();
-      const fresh = courses.find((c) => c.course_id === created.course_id);
-      if (fresh) selectCourse(fresh);
+      goto(`/admin/courses/${encodeURIComponent(created.course_id)}`);
     } catch (e: any) {
       toast.error(e.message);
     } finally {
@@ -460,70 +419,6 @@
       try {
         await deleteCourse(course.course_id);
         toast.success('Course deleted');
-        if (selectedCourse?.course_id === course.course_id) {
-          selectedCourse = null;
-          courseMembers = [];
-        }
-        await loadCourses();
-      } catch (e: any) {
-        toast.error(e.message);
-      }
-    };
-    showConfirm = true;
-  }
-
-  async function handleEnrollMember(identifier?: string, label?: string) {
-    if (!selectedCourse) return;
-    const id = (identifier ?? memberIdentifier).trim();
-    if (!id) {
-      toast.error('Pick a user from the list or type an email');
-      return;
-    }
-    enrolling = true;
-    try {
-      const enrolled = await enrollMember(selectedCourse.course_id, id, memberStudyId.trim() || undefined);
-      const shown = label || enrolled.display_name || enrolled.email || id;
-      toast.success(`Enrolled ${shown}`);
-      memberIdentifier = '';
-      memberStudyId = '';
-      courseMembers = await listCourseMembers(selectedCourse.course_id);
-      await loadCourses();
-    } catch (e: any) {
-      toast.error(e.message);
-    } finally {
-      enrolling = false;
-    }
-  }
-
-  // Candidate users for the enroll picker: every known user except the
-  // caller and anyone already enrolled in the selected course, filtered by
-  // the search box. Uses the existing usersByRole + userNameCache —
-  // no extra API call needed.
-  let enrollCandidates = $derived(() => {
-    const enrolledIds = new Set(courseMembers.map((m) => m.user_id));
-    const callerId = $authStore.userId;
-    const q = memberIdentifier.trim().toLowerCase();
-    return allUserIds()
-      .filter((id) => id !== callerId && !enrolledIds.has(id))
-      .filter((id) => {
-        if (!q) return true;
-        if (id.toLowerCase().includes(q)) return true;
-        const cached = userNameCache[id];
-        if (cached?.displayName?.toLowerCase().includes(q)) return true;
-        if (cached?.email?.toLowerCase().includes(q)) return true;
-        return false;
-      });
-  });
-
-  async function handleUnenrollMember(member: CourseMember) {
-    if (!selectedCourse) return;
-    const label = member.display_name || member.email || 'this user';
-    confirmMessage = `Remove ${label} from "${selectedCourse.name}"?`;
-    confirmAction = async () => {
-      try {
-        await unenrollMember(selectedCourse!.course_id, member.user_id);
-        toast.success('Member removed');
-        courseMembers = await listCourseMembers(selectedCourse!.course_id);
         await loadCourses();
       } catch (e: any) {
         toast.error(e.message);
@@ -935,11 +830,9 @@
             {:else}
               <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {#each courses as c (c.course_id)}
-                  <button onclick={() => selectCourse(c)}
-                          class="text-left rounded-2xl border bg-white dark:bg-gray-850 p-4 transition
-                                 {selectedCourse?.course_id === c.course_id
-                                   ? 'border-blue-500 ring-1 ring-blue-500/30 dark:border-blue-400'
-                                   : 'border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700'}">
+                  <button onclick={() => openCourse(c)}
+                          class="text-left rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-4 transition
+                                 hover:border-gray-200 dark:hover:border-gray-700 hover:shadow-sm">
                     <div class="flex items-start justify-between gap-2">
                       <div class="min-w-0">
                         <div class="text-sm font-semibold text-gray-900 dark:text-white truncate">{c.name}</div>
@@ -970,168 +863,6 @@
             {/if}
           </div>
 
-          <!-- Selected course: 2-column member panel -->
-          {#if selectedCourse}
-            <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 overflow-hidden">
-
-              <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-                <div>
-                  <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">Members</div>
-                  <div class="text-sm font-semibold text-gray-900 dark:text-white mt-0.5">{selectedCourse.name}</div>
-                </div>
-                <button onclick={() => { selectedCourse = null; courseMembers = []; }}
-                        aria-label="Close member panel"
-                        class="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                </button>
-              </div>
-
-              <div class="grid grid-cols-1 lg:grid-cols-2 gap-px bg-gray-100 dark:bg-gray-800">
-
-                <!-- Add-member column -->
-                <div class="bg-white dark:bg-gray-850 px-5 py-4">
-                  <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-3">Add member</div>
-
-                  <div class="relative mb-2">
-                    <div class="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700
-                                bg-white dark:bg-gray-850 focus-within:ring-1 focus-within:ring-blue-500 transition cursor-pointer"
-                         onclick={() => (showEnrollDropdown = true)}>
-                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                      </svg>
-                      <input type="text" bind:value={memberIdentifier}
-                             onfocus={() => (showEnrollDropdown = true)}
-                             oninput={() => (showEnrollDropdown = true)}
-                             onclick={(e) => e.stopPropagation()}
-                             placeholder="Search by name or email"
-                             class="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white placeholder:text-gray-400" />
-                      {#if memberIdentifier}
-                        <button onclick={(e) => { e.stopPropagation(); memberIdentifier = ''; }}
-                                aria-label="Clear search"
-                                class="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5">
-                          <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                          </svg>
-                        </button>
-                      {/if}
-                      <svg xmlns="http://www.w3.org/2000/svg"
-                           class="size-4 text-gray-400 shrink-0 transition-transform {showEnrollDropdown ? 'rotate-180' : ''}"
-                           viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="6 9 12 15 18 9" />
-                      </svg>
-                    </div>
-
-                    {#if showEnrollDropdown}
-                      <div class="fixed inset-0 z-30" onclick={() => (showEnrollDropdown = false)}></div>
-                      <div class="absolute left-0 right-0 mt-1 z-40 max-h-72 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-850 shadow-lg">
-                        {#if enrollCandidates().length === 0}
-                          <p class="px-3 py-6 text-xs text-center text-gray-400">
-                            {memberIdentifier.trim() ? 'No matching users.' : 'No users available to enroll.'}
-                          </p>
-                        {:else}
-                          {#each enrollCandidates() as candId (candId)}
-                            {@const cached = userNameCache[candId]}
-                            {@const label = cached?.displayName || cached?.email || 'Loading…'}
-                            {@const initials = (cached?.displayName || cached?.email || '??').slice(0, 2).toUpperCase()}
-                            <div class="flex items-center gap-2.5 px-3 py-2 border-b last:border-b-0 border-gray-100 dark:border-gray-800
-                                        hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-                              <div class="shrink-0 size-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
-                                          flex items-center justify-center text-white text-[10px] font-bold uppercase">
-                                {initials}
-                              </div>
-                              <div class="flex-1 min-w-0">
-                                <div class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{label}</div>
-                                <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                                  {#if cached?.email && cached?.displayName}
-                                    <span class="text-[10px] text-gray-400 truncate">{cached.email}</span>
-                                  {/if}
-                                  {#each getUserRoleDisplay(candId) as role}
-                                    <span class="px-1 py-0 rounded text-[8px] font-medium {getRoleBadgeColor(role)}">
-                                      {role.replace('_', ' ')}
-                                    </span>
-                                  {/each}
-                                </div>
-                              </div>
-                              <button onclick={() => handleEnrollMember(cached?.email || cached?.displayName || candId, label)}
-                                      disabled={enrolling}
-                                      class="shrink-0 text-[11px] px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100
-                                             dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/40 transition font-medium
-                                             disabled:opacity-50">
-                                Add
-                              </button>
-                            </div>
-                          {/each}
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-
-                  <div class="flex gap-2">
-                    <input type="text" bind:value={memberStudyId} placeholder="Study ID (optional)"
-                           class="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                                  bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                                  focus:ring-1 focus:ring-blue-500 transition" />
-                    {#if memberIdentifier.trim() && enrollCandidates().length === 0}
-                      <button onclick={() => handleEnrollMember()} disabled={enrolling}
-                              class="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50 whitespace-nowrap">
-                        {enrolling ? 'Adding...' : 'Add typed'}
-                      </button>
-                    {/if}
-                  </div>
-                  <p class="text-[10px] text-gray-400 mt-2">Click a user from the list above to enroll. Study ID applies to the next add.</p>
-                </div>
-
-                <!-- Members list column -->
-                <div class="bg-white dark:bg-gray-850 px-5 py-4">
-                  <div class="flex items-center justify-between mb-3">
-                    <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
-                      Enrolled · {courseMembers.length}
-                    </div>
-                    {#if membersLoading}
-                      <div class="size-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                    {/if}
-                  </div>
-                  {#if courseMembers.length === 0 && !membersLoading}
-                    <p class="text-xs text-gray-400 py-6 text-center">No members yet.</p>
-                  {:else}
-                    <div class="space-y-1.5 max-h-96 overflow-y-auto">
-                      {#each courseMembers as m (m.user_id)}
-                        <div class="flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-gray-50 dark:bg-gray-800 group">
-                          <div class="shrink-0 size-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
-                                      flex items-center justify-center text-white text-[10px] font-bold uppercase">
-                            {(m.display_name || m.email || '??').slice(0, 2).toUpperCase()}
-                          </div>
-                          <div class="flex-1 min-w-0">
-                            <div class="text-sm text-gray-900 dark:text-white truncate font-medium">
-                              {m.display_name || m.email || 'Loading…'}
-                            </div>
-                            <div class="flex items-center gap-1.5 mt-0.5">
-                              {#if m.email && m.display_name}
-                                <span class="text-[10px] text-gray-400 truncate">{m.email}</span>
-                              {/if}
-                              {#if m.study_id}
-                                <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                                  {m.study_id}
-                                </span>
-                              {/if}
-                            </div>
-                          </div>
-                          <button onclick={() => handleUnenrollMember(m)}
-                                  class="shrink-0 text-[11px] px-2.5 py-1 rounded-lg bg-red-50 text-red-700 hover:bg-red-100
-                                         dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40 transition font-medium
-                                         opacity-0 group-hover:opacity-100">
-                            Remove
-                          </button>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            </div>
-          {/if}
         </div>
 
       {:else if activeTab === 'violations'}

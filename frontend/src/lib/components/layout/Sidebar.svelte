@@ -26,7 +26,13 @@
   // admin nav (Users / Courses / Violations) instead of the chat list, so
   // there's one sidebar — never two stacked panels.
   let isAdminRoute = $derived($page.url.pathname.startsWith('/admin'));
-  let activeAdminTab = $derived($page.url.searchParams.get('tab') || 'users');
+  // The course detail route (/admin/courses/:id) is conceptually still
+  // the Courses tab, so highlight it when on any /admin/courses/* path.
+  let activeAdminTab = $derived(
+    $page.url.pathname.startsWith('/admin/courses')
+      ? 'courses'
+      : $page.url.searchParams.get('tab') || 'users',
+  );
 
   function gotoAdminTab(tab: 'users' | 'courses' | 'violations') {
     goto(`/admin?tab=${tab}`);

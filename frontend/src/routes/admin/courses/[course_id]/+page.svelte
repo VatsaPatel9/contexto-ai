@@ -1,0 +1,360 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
+  import { toast } from 'svelte-sonner';
+
+  import { authStore } from '$lib/stores/auth';
+  import {
+    usersByRole as usersByRoleStore,
+    userNameCache as userNameCacheStore,
+    loadAdminUsers,
+    allKnownUserIds,
+  } from '$lib/stores/admin';
+  import {
+    listCourses,
+    listCourseMembers,
+    enrollMember,
+    unenrollMember,
+    deleteCourse,
+    type Course,
+    type CourseMember,
+  } from '$lib/apis/admin';
+
+  // Route param
+  let courseId = $derived(($page.params as Record<string, string>).course_id);
+
+  // Data
+  let course = $state<Course | null>(null);
+  let members = $state<CourseMember[]>([]);
+  let loading = $state(true);
+
+  // Add-member state
+  let memberQuery = $state('');
+  let memberStudyId = $state('');
+  let enrolling = $state(false);
+
+  // Confirm dialog
+  let showConfirm = $state(false);
+  let confirmMessage = $state('');
+  let confirmAction = $state<(() => Promise<void>) | null>(null);
+
+  // ── Derived ────────────────────────────────────────────────────────
+
+  let usersByRole = $derived($usersByRoleStore);
+  let userNameCache = $derived($userNameCacheStore);
+
+  function getUserRoleDisplay(userId: string): string[] {
+    const roles: string[] = [];
+    for (const [role, ids] of Object.entries(usersByRole)) {
+      if (ids.includes(userId)) roles.push(role);
+    }
+    return roles;
+  }
+
+  function getRoleBadgeColor(role: string): string {
+    switch (role) {
+      case 'super_admin': return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+      case 'admin': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+      case 'user_uploader': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400';
+      default: return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+    }
+  }
+
+  let candidates = $derived.by(() => {
+    const enrolledIds = new Set(members.map((m) => m.user_id));
+    const callerId = $authStore.userId;
+    const q = memberQuery.trim().toLowerCase();
+    return allKnownUserIds()
+      .filter((id) => id !== callerId && !enrolledIds.has(id))
+      .filter((id) => {
+        if (!q) return true;
+        const cached = userNameCache[id];
+        if (cached?.displayName?.toLowerCase().includes(q)) return true;
+        if (cached?.email?.toLowerCase().includes(q)) return true;
+        return false;
+      });
+  });
+
+  // ── Loading ─────────────────────────────────────────────────────────
+
+  onMount(async () => {
+    if (!$authStore.roles.includes('super_admin') && !$authStore.roles.includes('admin')) {
+      goto('/chat');
+      return;
+    }
+    await Promise.all([loadAdminUsers(), loadCourse(), loadMembers()]);
+    loading = false;
+  });
+
+  async function loadCourse() {
+    try {
+      const all = await listCourses();
+      course = all.find((c) => c.course_id === courseId) ?? null;
+      if (!course) {
+        toast.error('Course not found');
+        goto('/admin?tab=courses');
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load course');
+    }
+  }
+
+  async function loadMembers() {
+    try {
+      members = await listCourseMembers(courseId);
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load members');
+    }
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────
+
+  async function addMember(identifier: string, label?: string) {
+    if (!course) return;
+    const id = identifier.trim();
+    if (!id) {
+      toast.error('Pick a user or type an email');
+      return;
+    }
+    enrolling = true;
+    try {
+      const enrolled = await enrollMember(course.course_id, id, memberStudyId.trim() || undefined);
+      const shown = label || enrolled.display_name || enrolled.email || id;
+      toast.success(`Enrolled ${shown}`);
+      memberQuery = '';
+      memberStudyId = '';
+      await loadMembers();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      enrolling = false;
+    }
+  }
+
+  function removeMember(member: CourseMember) {
+    if (!course) return;
+    const label = member.display_name || member.email || 'this user';
+    confirmMessage = `Remove ${label} from "${course.name}"?`;
+    confirmAction = async () => {
+      try {
+        await unenrollMember(course!.course_id, member.user_id);
+        toast.success('Member removed');
+        await loadMembers();
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+    };
+    showConfirm = true;
+  }
+
+  function handleDeleteCourse() {
+    if (!course) return;
+    confirmMessage = `Delete course "${course.name}"? Documents and enrollments will be removed.`;
+    confirmAction = async () => {
+      try {
+        await deleteCourse(course!.course_id);
+        toast.success('Course deleted');
+        goto('/admin?tab=courses');
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+    };
+    showConfirm = true;
+  }
+</script>
+
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+
+<!-- ═══ CONFIRM DIALOG ═══ -->
+{#if showConfirm}
+  <div class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"
+       onclick={() => showConfirm = false}>
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl max-w-sm w-full p-6"
+         onclick={(e) => e.stopPropagation()}>
+      <p class="text-sm text-gray-700 dark:text-gray-300 mb-5">{confirmMessage}</p>
+      <div class="flex gap-2 justify-end">
+        <button onclick={() => showConfirm = false}
+                class="px-3.5 py-1.5 text-sm rounded-full border border-gray-200 dark:border-gray-700
+                       text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+          Cancel
+        </button>
+        <button onclick={async () => { showConfirm = false; await confirmAction?.(); }}
+                class="px-3.5 py-1.5 text-sm rounded-full bg-red-600 text-white hover:bg-red-700 transition">
+          Confirm
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ═══ MAIN ═══ -->
+<div class="flex flex-col h-full">
+  <div class="flex-1 overflow-y-auto">
+    <div class="max-w-6xl mx-auto w-full px-4 pt-4 pb-8 space-y-6">
+
+      <!-- Breadcrumb / header -->
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div class="min-w-0">
+          <button onclick={() => goto('/admin?tab=courses')}
+                  class="inline-flex items-center gap-1.5 text-xs font-medium
+                         text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            All courses
+          </button>
+          <h1 class="text-2xl font-bold text-gray-900 dark:text-white mt-1 truncate">
+            {course?.name || (loading ? 'Loading…' : 'Unknown course')}
+          </h1>
+          <div class="flex items-center gap-3 mt-1">
+            <span class="text-xs font-mono text-gray-400">{courseId}</span>
+            <span class="text-xs text-gray-500">{members.length} member{members.length === 1 ? '' : 's'}</span>
+          </div>
+          {#if course?.description}
+            <p class="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-2xl">{course.description}</p>
+          {/if}
+        </div>
+        {#if course}
+          <button onclick={handleDeleteCourse}
+                  class="text-xs px-3 py-1.5 rounded-lg bg-red-50 text-red-700 hover:bg-red-100
+                         dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40 transition font-medium">
+            Delete course
+          </button>
+        {/if}
+      </div>
+
+      <!-- Add member -->
+      <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">Add member</div>
+          <span class="text-[11px] text-gray-400">{candidates.length} available</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 mb-3">
+          <div class="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-850 focus-within:ring-1 focus-within:ring-blue-500 transition">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input type="text" bind:value={memberQuery}
+                   placeholder="Filter by name or email"
+                   class="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white placeholder:text-gray-400" />
+            {#if memberQuery}
+              <button onclick={() => memberQuery = ''}
+                      aria-label="Clear filter"
+                      class="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            {/if}
+          </div>
+          <input type="text" bind:value={memberStudyId} placeholder="Study ID (optional)"
+                 class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                        bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                        focus:ring-1 focus:ring-blue-500 transition w-full sm:w-44" />
+        </div>
+
+        <!-- Candidate list — full width, scrollable, NOT inside any clipping wrapper -->
+        <div class="rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 max-h-[28rem] overflow-y-auto">
+          {#if loading}
+            <p class="px-3 py-8 text-xs text-center text-gray-400">Loading users…</p>
+          {:else if candidates.length === 0}
+            <p class="px-3 py-8 text-xs text-center text-gray-400">
+              {memberQuery.trim() ? 'No matching users.' : 'No users available to enroll.'}
+            </p>
+          {:else}
+            {#each candidates as candId (candId)}
+              {@const cached = userNameCache[candId]}
+              {@const label = cached?.displayName || cached?.email || 'Loading…'}
+              {@const initials = (cached?.displayName || cached?.email || '??').slice(0, 2).toUpperCase()}
+              <div class="flex items-center gap-3 px-3 py-2 border-b last:border-b-0 border-gray-100 dark:border-gray-800
+                          hover:bg-white dark:hover:bg-gray-800 transition">
+                <div class="shrink-0 size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
+                            flex items-center justify-center text-white text-[11px] font-bold uppercase">
+                  {initials}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{label}</div>
+                  <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    {#if cached?.email && cached?.displayName}
+                      <span class="text-[10px] text-gray-400 truncate">{cached.email}</span>
+                    {/if}
+                    {#each getUserRoleDisplay(candId) as role}
+                      <span class="px-1 py-0 rounded text-[8px] font-medium {getRoleBadgeColor(role)}">
+                        {role.replace('_', ' ')}
+                      </span>
+                    {/each}
+                  </div>
+                </div>
+                <button
+                  onclick={() => addMember(cached?.email || cached?.displayName || candId, label)}
+                  disabled={enrolling}
+                  class="shrink-0 text-[11px] px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100
+                         dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/40 transition font-medium
+                         disabled:opacity-50">
+                  Add
+                </button>
+              </div>
+            {/each}
+          {/if}
+        </div>
+
+        {#if memberQuery.trim() && candidates.length === 0}
+          <div class="flex justify-end mt-2">
+            <button onclick={() => addMember(memberQuery)} disabled={enrolling}
+                    class="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50 whitespace-nowrap">
+              {enrolling ? 'Adding…' : `Add "${memberQuery.trim()}"`}
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Enrolled members -->
+      <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+            Enrolled · {members.length}
+          </div>
+        </div>
+        {#if loading}
+          <p class="text-xs text-gray-400 py-8 text-center">Loading members…</p>
+        {:else if members.length === 0}
+          <p class="text-xs text-gray-400 py-8 text-center">No members yet — add some from the list above.</p>
+        {:else}
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {#each members as m (m.user_id)}
+              <div class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-gray-800 group">
+                <div class="shrink-0 size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
+                            flex items-center justify-center text-white text-[11px] font-bold uppercase">
+                  {(m.display_name || m.email || '??').slice(0, 2).toUpperCase()}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-gray-900 dark:text-white truncate font-medium">
+                    {m.display_name || m.email || 'Loading…'}
+                  </div>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    {#if m.email && m.display_name}
+                      <span class="text-[10px] text-gray-400 truncate">{m.email}</span>
+                    {/if}
+                    {#if m.study_id}
+                      <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                        {m.study_id}
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+                <button onclick={() => removeMember(m)}
+                        class="shrink-0 text-[11px] px-2.5 py-1 rounded-lg bg-red-50 text-red-700 hover:bg-red-100
+                               dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40 transition font-medium
+                               opacity-0 group-hover:opacity-100">
+                  Remove
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+</div>
