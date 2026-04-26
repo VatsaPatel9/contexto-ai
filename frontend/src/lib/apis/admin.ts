@@ -36,6 +36,22 @@ export type Violation = {
   notes: string | null;
 };
 
+export type Course = {
+  course_id: string;
+  name: string;
+  description: string | null;
+  created_by: string | null;
+  member_count: number;
+};
+
+export type CourseMember = {
+  user_id: string;
+  display_name: string | null;
+  email: string | null;
+  study_id: string | null;
+  enrolled_at: string;
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 async function adminFetch(path: string, opts: RequestInit = {}): Promise<Response> {
@@ -140,5 +156,56 @@ export async function unbanUser(userId: string) {
   const res = await adminFetch(`/api/admin/users/${userId}/unban`, {
     method: 'POST',
   });
+  return res.json();
+}
+
+// ── Courses ────────────────────────────────────────────────────────────
+
+export async function listCourses(): Promise<Course[]> {
+  const res = await adminFetch('/api/admin/courses');
+  return res.json();
+}
+
+export async function createCourse(body: {
+  course_id: string;
+  name: string;
+  description?: string;
+}): Promise<Course> {
+  const res = await adminFetch('/api/admin/courses', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+export async function deleteCourse(courseId: string) {
+  const res = await adminFetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export async function listCourseMembers(courseId: string): Promise<CourseMember[]> {
+  const res = await adminFetch(`/api/admin/courses/${encodeURIComponent(courseId)}/members`);
+  return res.json();
+}
+
+export async function enrollMember(
+  courseId: string,
+  identifier: string,
+  studyId?: string,
+): Promise<CourseMember> {
+  const res = await adminFetch(`/api/admin/courses/${encodeURIComponent(courseId)}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ identifier, study_id: studyId ?? null }),
+  });
+  return res.json();
+}
+
+export async function unenrollMember(courseId: string, userId: string) {
+  const res = await adminFetch(
+    `/api/admin/courses/${encodeURIComponent(courseId)}/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  );
   return res.json();
 }

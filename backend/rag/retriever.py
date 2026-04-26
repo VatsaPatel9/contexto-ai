@@ -27,7 +27,7 @@ class Retriever:
     def retrieve(
         self,
         query: str,
-        dataset_id: str,
+        dataset_id: str | None,
         top_k: int = 5,
         score_threshold: float = 0.5,
         user_id: str | None = None,

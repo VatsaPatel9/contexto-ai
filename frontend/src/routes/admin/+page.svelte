@@ -14,16 +14,40 @@
     unbanUser,
     assignRole,
     removeRole,
+    listCourses,
+    createCourse,
+    deleteCourse,
+    listCourseMembers,
+    enrollMember,
+    unenrollMember,
     type UserProfile,
     type Violation,
+    type Course,
+    type CourseMember,
   } from '$lib/apis/admin';
   import { session } from '$lib/stores';
   import { listDocuments, deleteDocument, type UploadedDocument } from '$lib/apis/documents';
 
   // ── State ───────────────────────────────────────────────────────────
 
-  type Tab = 'users' | 'violations';
+  type Tab = 'users' | 'courses' | 'violations';
   let activeTab = $state<Tab>('users');
+
+  // Courses
+  let courses = $state<Course[]>([]);
+  let coursesLoaded = $state(false);
+  let selectedCourse = $state<Course | null>(null);
+  let courseMembers = $state<CourseMember[]>([]);
+  let membersLoading = $state(false);
+
+  let newCourseId = $state('');
+  let newCourseName = $state('');
+  let newCourseDesc = $state('');
+  let creatingCourse = $state(false);
+
+  let memberIdentifier = $state('');
+  let memberStudyId = $state('');
+  let enrolling = $state(false);
 
   // Users
   let usersByRole = $state<Record<string, string[]>>({});
@@ -360,6 +384,121 @@
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
     return n.toString();
   }
+
+  // ── Courses ─────────────────────────────────────────────────────────
+
+  async function loadCourses() {
+    try {
+      courses = await listCourses();
+      coursesLoaded = true;
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load courses');
+    }
+  }
+
+  async function selectCourse(course: Course) {
+    selectedCourse = course;
+    courseMembers = [];
+    membersLoading = true;
+    try {
+      courseMembers = await listCourseMembers(course.course_id);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      membersLoading = false;
+    }
+  }
+
+  async function handleCreateCourse() {
+    const id = newCourseId.trim();
+    const name = newCourseName.trim();
+    if (!id || !name) {
+      toast.error('Course ID and name are required');
+      return;
+    }
+    creatingCourse = true;
+    try {
+      const created = await createCourse({
+        course_id: id,
+        name,
+        description: newCourseDesc.trim() || undefined,
+      });
+      toast.success(`Course "${created.name}" created`);
+      newCourseId = '';
+      newCourseName = '';
+      newCourseDesc = '';
+      await loadCourses();
+      const fresh = courses.find((c) => c.course_id === created.course_id);
+      if (fresh) selectCourse(fresh);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      creatingCourse = false;
+    }
+  }
+
+  async function handleDeleteCourse(course: Course) {
+    confirmMessage = `Delete course "${course.name}"? Documents and enrollments will be removed.`;
+    confirmAction = async () => {
+      try {
+        await deleteCourse(course.course_id);
+        toast.success('Course deleted');
+        if (selectedCourse?.course_id === course.course_id) {
+          selectedCourse = null;
+          courseMembers = [];
+        }
+        await loadCourses();
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+    };
+    showConfirm = true;
+  }
+
+  async function handleEnrollMember() {
+    if (!selectedCourse) return;
+    const id = memberIdentifier.trim();
+    if (!id) {
+      toast.error('Enter an email or display name');
+      return;
+    }
+    enrolling = true;
+    try {
+      await enrollMember(selectedCourse.course_id, id, memberStudyId.trim() || undefined);
+      toast.success(`Enrolled "${id}"`);
+      memberIdentifier = '';
+      memberStudyId = '';
+      courseMembers = await listCourseMembers(selectedCourse.course_id);
+      await loadCourses();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      enrolling = false;
+    }
+  }
+
+  async function handleUnenrollMember(member: CourseMember) {
+    if (!selectedCourse) return;
+    const label = member.display_name || member.email || member.user_id.slice(0, 8) + '...';
+    confirmMessage = `Remove ${label} from "${selectedCourse.name}"?`;
+    confirmAction = async () => {
+      try {
+        await unenrollMember(selectedCourse!.course_id, member.user_id);
+        toast.success('Member removed');
+        courseMembers = await listCourseMembers(selectedCourse!.course_id);
+        await loadCourses();
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+    };
+    showConfirm = true;
+  }
+
+  $effect(() => {
+    if (activeTab === 'courses' && !coursesLoaded) {
+      loadCourses();
+    }
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -411,6 +550,13 @@
                        ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
                        : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}">
         Users ({allUserIds().length})
+      </button>
+      <button onclick={() => activeTab = 'courses'}
+              class="px-3 py-1.5 text-sm font-medium rounded-lg transition
+                     {activeTab === 'courses'
+                       ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
+                       : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}">
+        Courses{coursesLoaded ? ` (${courses.length})` : ''}
       </button>
       <button onclick={() => activeTab = 'violations'}
               class="px-3 py-1.5 text-sm font-medium rounded-lg transition
@@ -790,6 +936,144 @@
             <p class="text-sm text-gray-400">Search for a user above to view their details</p>
           </div>
         {/if}
+
+      {:else if activeTab === 'courses'}
+
+        <!-- ═══ COURSES TAB ═══ -->
+        <div class="px-4 py-3 space-y-4">
+          <!-- Create course -->
+          <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-4">
+            <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-3">New Course</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+              <input type="text" bind:value={newCourseId} placeholder="course_id (e.g. bio7-control)"
+                     class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                            focus:ring-1 focus:ring-blue-500 transition" />
+              <input type="text" bind:value={newCourseName} placeholder="Display name (e.g. Biology 7 — Control)"
+                     class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                            focus:ring-1 focus:ring-blue-500 transition" />
+            </div>
+            <textarea bind:value={newCourseDesc} placeholder="Description (optional)" rows="2"
+                      class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                             bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                             focus:ring-1 focus:ring-blue-500 transition resize-none mb-2"></textarea>
+            <div class="flex justify-end">
+              <button onclick={handleCreateCourse} disabled={creatingCourse}
+                      class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50">
+                {creatingCourse ? 'Creating...' : 'Create Course'}
+              </button>
+            </div>
+          </div>
+
+          <!-- Course list -->
+          <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800 text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+              Your Courses
+            </div>
+            {#if !coursesLoaded}
+              <div class="px-4 py-8 text-center text-gray-400 text-sm">Loading...</div>
+            {:else if courses.length === 0}
+              <div class="px-4 py-8 text-center text-gray-400 text-sm">No courses yet — create one above.</div>
+            {:else}
+              <div class="divide-y divide-gray-100 dark:divide-gray-800">
+                {#each courses as c (c.course_id)}
+                  <div class="flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition cursor-pointer
+                              {selectedCourse?.course_id === c.course_id ? 'bg-gray-50 dark:bg-gray-800/50' : ''}"
+                       onclick={() => selectCourse(c)}>
+                    <div class="min-w-0 flex-1">
+                      <div class="text-sm font-medium text-gray-900 dark:text-white truncate">{c.name}</div>
+                      <div class="flex items-center gap-2 mt-0.5">
+                        <span class="text-[10px] font-mono text-gray-400">{c.course_id}</span>
+                        <span class="text-[10px] text-gray-500">{c.member_count} member{c.member_count === 1 ? '' : 's'}</span>
+                      </div>
+                    </div>
+                    <button onclick={(e) => { e.stopPropagation(); handleDeleteCourse(c); }}
+                            class="ml-2 p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+                            title="Delete course">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Member management for selected course -->
+          {#if selectedCourse}
+            <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 overflow-hidden">
+              <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+                <div>
+                  <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">Members</div>
+                  <div class="text-sm font-medium text-gray-900 dark:text-white mt-0.5">{selectedCourse.name}</div>
+                </div>
+                <button onclick={() => { selectedCourse = null; courseMembers = []; }}
+                        class="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                  <input type="text" bind:value={memberIdentifier} placeholder="Email or display name"
+                         class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                                bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                                focus:ring-1 focus:ring-blue-500 transition" />
+                  <input type="text" bind:value={memberStudyId} placeholder="Study ID (optional)"
+                         class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                                bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                                focus:ring-1 focus:ring-blue-500 transition" />
+                </div>
+                <div class="flex justify-end">
+                  <button onclick={handleEnrollMember} disabled={enrolling}
+                          class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium disabled:opacity-50">
+                    {enrolling ? 'Adding...' : 'Add member'}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                {#if membersLoading}
+                  <div class="px-4 py-8 text-center text-gray-400 text-sm">Loading members...</div>
+                {:else if courseMembers.length === 0}
+                  <div class="px-4 py-8 text-center text-gray-400 text-sm">No members yet.</div>
+                {:else}
+                  <div class="divide-y divide-gray-100 dark:divide-gray-800">
+                    {#each courseMembers as m (m.user_id)}
+                      <div class="flex items-center justify-between px-4 py-2.5">
+                        <div class="min-w-0 flex-1">
+                          <div class="text-sm text-gray-900 dark:text-white truncate">
+                            {m.display_name || m.email || m.user_id.slice(0, 12) + '...'}
+                          </div>
+                          <div class="flex items-center gap-2 mt-0.5">
+                            {#if m.email && m.display_name}
+                              <span class="text-[10px] text-gray-400 truncate">{m.email}</span>
+                            {/if}
+                            {#if m.study_id}
+                              <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                                {m.study_id}
+                              </span>
+                            {/if}
+                          </div>
+                        </div>
+                        <button onclick={() => handleUnenrollMember(m)}
+                                class="ml-2 text-[11px] px-2.5 py-1 rounded-lg bg-red-50 text-red-700 hover:bg-red-100
+                                       dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40 transition font-medium">
+                          Remove
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
 
       {:else if activeTab === 'violations'}
 

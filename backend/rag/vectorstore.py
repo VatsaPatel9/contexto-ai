@@ -42,7 +42,7 @@ class PgVectorStore:
     def search(
         self,
         query_embedding: list[float],
-        dataset_id: str,
+        dataset_id: str | None,
         top_k: int = 5,
         score_threshold: float = 0.5,
         user_id: str | None = None,
@@ -54,9 +54,18 @@ class PgVectorStore:
         keys: ``content``, ``metadata``, ``score``, ``document_id``,
         ``page_num``, ``section``.
 
-        When *user_id* is provided, results are filtered by document
-        visibility: global documents are always included, while private
-        documents are only included if uploaded by the requesting user.
+        Tri-state visibility filter on ``documents.uploader_role``:
+
+        * ``baseline`` (super_admin uploads) — always included
+        * ``course`` (admin uploads) — included only when the segment's
+          dataset matches *dataset_id* AND the user is enrolled
+          in that dataset (row in ``user_courses``).
+        * ``private`` (user uploads) — included only when uploaded by
+          the requesting user AND the segment's dataset matches.
+
+        Pass ``dataset_id=None`` (or empty) to retrieve baseline content
+        only — useful when the user has not selected / is not enrolled
+        in any course.
         """
         query_sql = sa_text("""
             SELECT
@@ -69,13 +78,23 @@ class PgVectorStore:
                 1 - (ds.embedding <=> :query_embedding) AS score
             FROM document_segments ds
             JOIN documents d ON d.id = ds.document_id
-            WHERE ds.dataset_id = :dataset_id
-              AND ds.embedding IS NOT NULL
+            WHERE ds.embedding IS NOT NULL
               AND d.deleted_at IS NULL
               AND 1 - (ds.embedding <=> :query_embedding) >= :score_threshold
               AND (
-                  d.visibility = 'global'
-                  OR (d.visibility = 'private' AND d.uploaded_by = :user_id)
+                  d.uploader_role = 'baseline'
+                  OR (
+                      d.uploader_role = 'course'
+                      AND ds.dataset_id::text = :dataset_id
+                      AND :dataset_id IN (
+                          SELECT dataset_id::text FROM user_courses WHERE user_id = :user_id
+                      )
+                  )
+                  OR (
+                      d.uploader_role = 'private'
+                      AND d.uploaded_by = :user_id
+                      AND ds.dataset_id::text = :dataset_id
+                  )
               )
             ORDER BY ds.embedding <=> :query_embedding
             LIMIT :top_k
@@ -89,7 +108,7 @@ class PgVectorStore:
                 query_sql,
                 {
                     "query_embedding": embedding_str,
-                    "dataset_id": str(dataset_id),
+                    "dataset_id": str(dataset_id) if dataset_id else "",
                     "score_threshold": score_threshold,
                     "top_k": top_k,
                     "user_id": user_id or "",

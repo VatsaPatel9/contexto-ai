@@ -24,11 +24,12 @@ def get_db():
 
 
 def init_db() -> None:
-    """Create only our 7 tables. Fast — no introspection of existing tables."""
+    """Create only our 8 tables. Fast — no introspection of existing tables."""
     from backend.models.conversation import Conversation, Message  # noqa: F401
     from backend.models.dataset import Dataset, Document, DocumentSegment  # noqa: F401
     from backend.models.email_verification_attempt import EmailVerificationAttempt  # noqa: F401
     from backend.models.password_reset_attempt import PasswordResetAttempt  # noqa: F401
+    from backend.models.user_course import UserCourse  # noqa: F401
     from backend.models.user_flags import UserFlag  # noqa: F401
     from backend.models.user_profile import UserProfile  # noqa: F401
 
@@ -43,7 +44,27 @@ def init_db() -> None:
     _add_column_if_missing(engine, "user_profiles", "display_name", "VARCHAR(255)")
     _add_column_if_missing(engine, "documents", "deleted_at", "TIMESTAMPTZ")
     _add_column_if_missing(engine, "datasets", "course_id", "VARCHAR(255)")
+    _add_column_if_missing(engine, "datasets", "created_by", "VARCHAR(255)")
+    _add_column_if_missing(engine, "documents", "uploader_role", "VARCHAR(20)")
     _add_column_if_missing(engine, "messages", "feedback", "VARCHAR(20)")
+
+    # Backfill: classify pre-existing documents by their legacy visibility.
+    # global → 'baseline' (treat existing admin uploads as institutional baseline)
+    # private → 'private'
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE documents
+                SET uploader_role = CASE
+                    WHEN visibility = 'global' THEN 'baseline'
+                    ELSE 'private'
+                END
+                WHERE uploader_role IS NULL
+                """
+            )
+        )
+        conn.commit()
 
     # Backfill: copy any feedback that was previously stashed inside
     # messages.retrieval_sources -> 'feedback' -> 'rating' into the new

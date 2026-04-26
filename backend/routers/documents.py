@@ -54,9 +54,16 @@ async def upload_document(
     user_id = session.get_user_id()
     roles = await get_user_roles(session)
 
-    # Determine visibility based on role
-    is_admin = SUPER_ADMIN in roles or ADMIN in roles
-    visibility = "global" if is_admin else "private"
+    # Determine the document scope based on uploader's role.
+    is_super_admin = SUPER_ADMIN in roles
+    is_admin = is_super_admin or ADMIN in roles
+    if is_super_admin:
+        uploader_role = "baseline"
+    elif ADMIN in roles:
+        uploader_role = "course"
+    else:
+        uploader_role = "private"
+    visibility = "global" if is_admin else "private"  # legacy column, retained
 
     # Enforce upload limit for non-admin users
     if not is_admin:
@@ -70,15 +77,25 @@ async def upload_document(
                        "Contact your administrator to increase your limit.",
             )
 
-    # 1. Get or create Dataset for course_id
+    # 1. Get or create Dataset for course_id.
+    # If created here by an admin, they become the course owner.
     dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
     if not dataset:
         dataset = Dataset(
             course_id=course_id,
             name=f"Dataset for {course_id}",
+            created_by=user_id if is_admin else None,
         )
         db.add(dataset)
         db.commit()
+    else:
+        # Existing course: an admin (non-super) can only upload to courses
+        # they created. Super-admins can upload anywhere.
+        if uploader_role == "course" and dataset.created_by and dataset.created_by != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only upload to courses you created.",
+            )
 
     # Read file bytes
     file_bytes = await file.read()
@@ -113,6 +130,7 @@ async def upload_document(
         content_type=stored_content_type,
         uploaded_by=user_id,
         visibility=visibility,
+        uploader_role=uploader_role,
         status="processing",
     )
     db.add(doc)
@@ -295,12 +313,22 @@ async def list_documents(
     q = db.query(Document).filter(Document.dataset_id == dataset.id)
 
     if not is_admin:
-        # Users: only active docs, global + own private
-        q = q.filter(
-            Document.deleted_at.is_(None),
-            (Document.visibility == "global")
-            | ((Document.visibility == "private") & (Document.uploaded_by == user_id)),
+        # Tri-state visibility for non-admins.
+        from backend.models.user_course import UserCourse
+        is_enrolled = (
+            db.query(UserCourse)
+            .filter(UserCourse.user_id == user_id, UserCourse.dataset_id == dataset.id)
+            .first()
+            is not None
         )
+        visibility_clauses = [Document.uploader_role == "baseline"]
+        if is_enrolled:
+            visibility_clauses.append(Document.uploader_role == "course")
+        visibility_clauses.append(
+            (Document.uploader_role == "private") & (Document.uploaded_by == user_id)
+        )
+        from sqlalchemy import or_
+        q = q.filter(Document.deleted_at.is_(None), or_(*visibility_clauses))
     # Admins: see everything (including soft-deleted)
 
     docs = q.order_by(Document.created_at.desc()).all()
@@ -356,8 +384,25 @@ async def get_document_signed_url(
     if not is_admin:
         if doc.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Document not found")
-        if doc.visibility == "private" and doc.uploaded_by != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        # Tri-state access for non-admins
+        if doc.uploader_role == "baseline":
+            pass  # always accessible
+        elif doc.uploader_role == "course":
+            from backend.models.user_course import UserCourse
+            enrolled = (
+                db.query(UserCourse)
+                .filter(
+                    UserCourse.user_id == user_id,
+                    UserCourse.dataset_id == doc.dataset_id,
+                )
+                .first()
+                is not None
+            )
+            if not enrolled:
+                raise HTTPException(status_code=403, detail="Access denied")
+        else:  # private (or legacy)
+            if doc.uploaded_by != user_id:
+                raise HTTPException(status_code=403, detail="Access denied")
 
     if not doc.file_path:
         raise HTTPException(

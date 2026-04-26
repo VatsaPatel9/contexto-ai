@@ -60,41 +60,57 @@ class BanRequest(BaseModel):
 async def list_users(
     role: str | None = None,
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
+    db: DBSession = Depends(get_db),
 ):
     """List users, optionally filtered by role.
 
-    Admins cannot see super_admin users. Only super_admins can see other super_admins.
+    super_admin sees every user. admin sees only users enrolled in courses
+    they created (and never any other admin / super_admin).
     """
     from backend.auth.dependencies import get_user_roles as _get_caller_roles
+    caller_id = session.get_user_id()
     caller_roles = await _get_caller_roles(session)
     is_super_admin = SUPER_ADMIN in caller_roles
 
-    # Get super_admin user IDs so we can filter them out for non-super_admins
+    # For non-super-admins, build the visibility scope:
+    # - hidden: every super_admin and every admin (other admins are off-limits)
+    # - allowed: users enrolled in courses the caller created
     hidden_user_ids: set[str] = set()
+    allowed_user_ids: set[str] | None = None  # None = no scope filter (super_admin)
     if not is_super_admin:
-        sa_result = await get_users_that_have_role("public", SUPER_ADMIN)
-        if not isinstance(sa_result, UnknownRoleError):
-            hidden_user_ids = set(sa_result.users)
+        for hidden_role in (SUPER_ADMIN, ADMIN):
+            r = await get_users_that_have_role("public", hidden_role)
+            if not isinstance(r, UnknownRoleError):
+                hidden_user_ids.update(r.users)
+        # Always allow the caller themselves to remain visible? No — self-management
+        # lives on the profile page; we already drop the caller from the dropdown.
+        allowed_user_ids = await _admin_scope_user_ids(db, caller_id)
+
+    def _in_scope(user_id: str) -> bool:
+        if user_id in hidden_user_ids:
+            return False
+        if allowed_user_ids is None:
+            return True
+        return user_id in allowed_user_ids
 
     if role:
-        # Don't let admins query the super_admin role directly
-        if role == SUPER_ADMIN and not is_super_admin:
+        # Admins cannot enumerate the super_admin or admin roles.
+        if not is_super_admin and role in (SUPER_ADMIN, ADMIN):
             return {"users": []}
         result = await get_users_that_have_role("public", role)
         if isinstance(result, UnknownRoleError):
             raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
-        filtered = [u for u in result.users if u not in hidden_user_ids]
-        return {"users": filtered}
+        return {"users": [u for u in result.users if _in_scope(u)]}
 
     roles_to_list = ALL_ROLES + [USER_UPLOADER]
     if not is_super_admin:
-        roles_to_list = [r for r in roles_to_list if r != SUPER_ADMIN]
+        roles_to_list = [r for r in roles_to_list if r not in (SUPER_ADMIN, ADMIN)]
 
     all_users: dict[str, list[str]] = {}
     for r in roles_to_list:
         result = await get_users_that_have_role("public", r)
         if not isinstance(result, UnknownRoleError):
-            filtered = [u for u in result.users if u not in hidden_user_ids]
+            filtered = [u for u in result.users if _in_scope(u)]
             if filtered:
                 all_users[r] = filtered
     return {"users_by_role": all_users}
@@ -110,13 +126,76 @@ async def _guard_super_admin_target(session: SessionContainer, target_user_id: s
             raise HTTPException(status_code=403, detail="Access denied")
 
 
+async def _admin_scope_user_ids(db: DBSession, caller_id: str) -> set[str]:
+    """Return the set of user_ids enrolled in courses *caller_id* created.
+
+    Used to scope an admin's user-management actions to only their own
+    course members.
+    """
+    from backend.models.dataset import Dataset
+    from backend.models.user_course import UserCourse
+
+    rows = (
+        db.query(UserCourse.user_id)
+        .join(Dataset, Dataset.id == UserCourse.dataset_id)
+        .filter(Dataset.created_by == caller_id)
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+async def _assert_can_manage_user(
+    session: SessionContainer,
+    target_user_id: str,
+    db: DBSession,
+) -> None:
+    """Authorize the calling admin to manage *target_user_id*.
+
+    * super_admin: always allowed (god-mode).
+    * admin: target must be (a) NOT another admin or super_admin, and
+      (b) enrolled in at least one course the caller created.
+    * anyone else: 403.
+    """
+    from backend.auth.dependencies import get_user_roles as _roles
+
+    caller_id = session.get_user_id()
+    caller_roles = await _roles(session)
+
+    if SUPER_ADMIN in caller_roles:
+        return
+
+    if ADMIN not in caller_roles:
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    # Self-management belongs on the profile page, not the admin panel.
+    if target_user_id == caller_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Use the profile page to manage your own account.",
+        )
+
+    # Block admins from operating on other admins / super_admins.
+    target_roles_result = await get_roles_for_user("public", target_user_id)
+    target_roles = target_roles_result.roles
+    if SUPER_ADMIN in target_roles or ADMIN in target_roles:
+        raise HTTPException(status_code=403, detail="Cannot manage another admin")
+
+    scope = await _admin_scope_user_ids(db, caller_id)
+    if target_user_id not in scope:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only manage users enrolled in courses you created.",
+        )
+
+
 @router.get("/users/{user_id}/roles", response_model=UserRolesResponse)
 async def get_user_roles_endpoint(
     user_id: str,
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
+    db: DBSession = Depends(get_db),
 ):
     """Get all roles assigned to a user."""
-    await _guard_super_admin_target(session, user_id)
+    await _assert_can_manage_user(session, user_id, db)
     result = await get_roles_for_user("public", user_id)
     return UserRolesResponse(user_id=user_id, roles=result.roles)
 
@@ -167,7 +246,7 @@ async def get_user_profile(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    await _guard_super_admin_target(session, user_id)
+    await _assert_can_manage_user(session, user_id, db)
     """View a user's profile: display name, email, uploads, tokens, and flag status."""
     profile = get_or_create_profile(db, user_id)
     db.commit()
@@ -231,6 +310,7 @@ async def set_upload_limit(
 
     Also grants the ``user_uploader`` role if not already assigned.
     """
+    await _assert_can_manage_user(session, user_id, db)
     if body.limit < 0:
         raise HTTPException(status_code=400, detail="Limit must be >= 0")
 
@@ -258,6 +338,7 @@ async def revoke_upload_limit(
     db: DBSession = Depends(get_db),
 ):
     """Revoke a user's upload permission and clear their limit."""
+    await _assert_can_manage_user(session, user_id, db)
     profile = get_or_create_profile(db, user_id)
     profile.upload_limit = None
     db.commit()
@@ -284,6 +365,7 @@ async def set_token_limit(
     db: DBSession = Depends(get_db),
 ):
     """Set or update a user's token budget. Send ``null`` for unlimited."""
+    await _assert_can_manage_user(session, user_id, db)
     if body.limit is not None and body.limit < 0:
         raise HTTPException(status_code=400, detail="Token limit must be >= 0 or null")
 
@@ -308,9 +390,16 @@ async def list_violations(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    """List all users with active violations (non-clean flag level)."""
+    """List flagged users (super_admin: all; admin: only their course members)."""
+    from backend.auth.dependencies import get_user_roles as _roles
+    caller_roles = await _roles(session)
     flag_svc = UserFlagService(db)
     flagged = flag_svc.get_flagged_users()
+
+    if SUPER_ADMIN not in caller_roles:
+        caller_id = session.get_user_id()
+        scope = await _admin_scope_user_ids(db, caller_id)
+        flagged = [f for f in flagged if f.user_id in scope]
 
     return {
         "violations": [
@@ -335,7 +424,7 @@ async def get_user_violations(
     session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
     db: DBSession = Depends(get_db),
 ):
-    await _guard_super_admin_target(session, user_id)
+    await _assert_can_manage_user(session, user_id, db)
     """Get detailed violation info for a specific user."""
     flag_svc = UserFlagService(db)
     flag = flag_svc.get_flag(user_id)
@@ -359,7 +448,7 @@ async def ban_user(
     db: DBSession = Depends(get_db),
 ):
     """Ban (suspend) a user. They will be unable to send messages."""
-    await _guard_super_admin_target(session, user_id)
+    await _assert_can_manage_user(session, user_id, db)
     admin_id = session.get_user_id()
     flag_svc = UserFlagService(db)
     flag = flag_svc.admin_override(
@@ -383,7 +472,7 @@ async def unban_user(
     db: DBSession = Depends(get_db),
 ):
     """Unban a user by resetting their flag level to clean."""
-    await _guard_super_admin_target(session, user_id)
+    await _assert_can_manage_user(session, user_id, db)
     admin_id = session.get_user_id()
     flag_svc = UserFlagService(db)
     flag = flag_svc.admin_override(

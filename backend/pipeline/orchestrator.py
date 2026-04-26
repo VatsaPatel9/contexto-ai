@@ -21,6 +21,7 @@ from backend.llm.client import LLMClient
 from backend.llm.humanizer import humanize_response
 from backend.models.conversation import Conversation, Message
 from backend.models.dataset import Dataset
+from backend.models.user_course import UserCourse
 from backend.models.user_flags import FlagLevel, UserFlagService
 from backend.models.user_profile import get_or_create_profile
 from backend.config import Settings
@@ -454,29 +455,48 @@ async def process_chat_message(
     # ------------------------------------------------------------------
     # 7. RAG retrieve
     # ------------------------------------------------------------------
+    # Resolve dataset for the requested course_id, then check membership.
+    # If the user isn't enrolled in this course (and isn't an admin/owner),
+    # we silently fall back to baseline-only retrieval — they still get
+    # super_admin-uploaded baseline content but no course-private materials.
     source_chunks: list[SourceChunk] = []
-    dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
+    dataset = (
+        db.query(Dataset).filter(Dataset.course_id == course_id).first()
+        if course_id
+        else None
+    )
+    effective_dataset_id: str | None = None
+    if dataset:
+        is_enrolled = (
+            db.query(UserCourse)
+            .filter(UserCourse.user_id == user_id, UserCourse.dataset_id == dataset.id)
+            .first()
+            is not None
+        )
+        is_owner = dataset.created_by == user_id
+        if is_enrolled or is_owner:
+            effective_dataset_id = str(dataset.id)
     if retriever:
-        if dataset:
-            try:
-                source_chunks = retriever.retrieve(
-                    working_query,
-                    str(dataset.id),
-                    top_k=settings.rag_top_k,
-                    score_threshold=settings.rag_score_threshold,
-                    user_id=user_id,
-                )
-            except Exception as exc:
-                logger.error("RAG retrieval failed: %s", exc)
+        try:
+            source_chunks = retriever.retrieve(
+                working_query,
+                effective_dataset_id,
+                top_k=settings.rag_top_k,
+                score_threshold=settings.rag_score_threshold,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.error("RAG retrieval failed: %s", exc)
 
     # ------------------------------------------------------------------
     # 7b. STRICT: Refuse if no relevant context found in vectors
     # Only allow meta questions (greetings, "who are you") without context
     # ------------------------------------------------------------------
-    # Sample a few chunk snippets so the LLM knows what topics are available
+    # Only sample topic previews from a dataset the user is allowed to read,
+    # otherwise we'd leak course content to unenrolled users.
     has_content = False
     topic_snippets: list[str] = []
-    if dataset:
+    if dataset and effective_dataset_id:
         try:
             from backend.models.dataset import Document
             has_content = (
@@ -499,7 +519,7 @@ async def process_chat_message(
             pass
 
     if msg_type != "meta" and not source_chunks:
-        if has_content:
+        if has_content and effective_dataset_id:
             available_docs = _list_available_docs(db, dataset.id)
             if available_docs:
                 docs_block = "\n".join(

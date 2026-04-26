@@ -28,6 +28,7 @@ class Dataset(Base):
     course_id = Column(String(255), nullable=False, unique=True)
     name = Column(String(512), nullable=False)
     description = Column(Text, nullable=True)
+    created_by = Column(String(255), nullable=True)  # admin user_id who owns this course
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -54,7 +55,10 @@ class Document(Base):
     uploaded_by = Column(String(255), nullable=True)  # SuperTokens user ID
     visibility = Column(
         String(20), nullable=False, default="global"
-    )  # "global" (admin uploads, all can RAG) | "private" (user uploads, only uploader can RAG)
+    )  # legacy: "global" | "private". Kept for backwards compat; retrieval uses uploader_role.
+    uploader_role = Column(
+        String(20), nullable=True, default="private"
+    )  # "baseline" (super_admin, visible to all) | "course" (admin, visible to enrolled users) | "private" (user, uploader only)
     topics = Column(JSONB, nullable=True)
     version = Column(Integer, nullable=False, default=1)
     chunk_count = Column(Integer, nullable=False, default=0)
