@@ -238,5 +238,11 @@
         </button>
       {/if}
     </div>
+
+    <div class="mt-6 flex items-center justify-center gap-3 text-[11px] text-gray-400 dark:text-gray-600">
+      <a href="/terms" class="hover:text-gray-600 dark:hover:text-gray-400 transition">Terms</a>
+      <span aria-hidden="true">·</span>
+      <a href="/privacy" class="hover:text-gray-600 dark:hover:text-gray-400 transition">Privacy</a>
+    </div>
   </div>
 </div>

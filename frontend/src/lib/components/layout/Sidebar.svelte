@@ -362,6 +362,13 @@
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
+
+      <!-- Legal footer -->
+      <div class="px-3 pb-2 pt-0 flex items-center gap-2 text-[10px] text-gray-400 dark:text-gray-600">
+        <a href="/terms" class="hover:text-gray-600 dark:hover:text-gray-400 transition">Terms</a>
+        <span aria-hidden="true">·</span>
+        <a href="/privacy" class="hover:text-gray-600 dark:hover:text-gray-400 transition">Privacy</a>
+      </div>
     </div>
   </aside>
 {/if}
