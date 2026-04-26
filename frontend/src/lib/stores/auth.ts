@@ -79,8 +79,13 @@ export async function login(email: string, password: string) {
   await refreshAuthState();
 }
 
-export async function register(email: string, password: string, displayName?: string) {
-  await stSignUp(email, password, displayName);
+export async function register(
+  email: string,
+  password: string,
+  displayName: string | undefined,
+  termsVersion: string,
+) {
+  await stSignUp(email, password, displayName, termsVersion);
   await refreshAuthState();
 }
 

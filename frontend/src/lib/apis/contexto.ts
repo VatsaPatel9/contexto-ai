@@ -74,6 +74,7 @@ export type ParametersResponse = {
   opening_statement: string;
   suggested_questions: string[];
   course_name: string;
+  terms_version: string;
 };
 
 // ── Chat Messages (SSE Streaming) ──────────────────────────────────────

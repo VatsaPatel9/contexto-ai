@@ -187,27 +187,55 @@ export async function submitNewPassword(newPassword: string): Promise<SubmitNewP
 
 // ── Auth helpers ──────────────────────────────────────────────────────
 
-export async function signUp(email: string, password: string, displayName?: string) {
+export async function signUp(
+  email: string,
+  password: string,
+  displayName: string | undefined,
+  termsVersion: string,
+) {
   const formFields = [
     { id: 'email', value: email },
     { id: 'password', value: password },
+    // The server rejects signup unless these match the current version.
+    // The values flow into supertokens_config.sign_up_post which double-
+    // checks them before any user is created.
+    { id: 'terms_accepted', value: 'true' },
+    { id: 'terms_version', value: termsVersion },
   ];
   if (displayName) {
     formFields.push({ id: 'display_name', value: displayName });
   }
 
-  const response = await EmailPassword.signUp({ formFields });
+  const response = (await EmailPassword.signUp({ formFields })) as {
+    status: string;
+    user?: unknown;
+    formFields?: Array<{ id: string; error: string }>;
+    reason?: string;
+  };
 
   if (response.status === 'FIELD_ERROR') {
-    const errors = response.formFields.map((f) => `${f.id}: ${f.error}`).join(', ');
-    throw new Error(errors);
+    const errors = (response.formFields ?? [])
+      .map((f) => `${f.id}: ${f.error}`)
+      .join(', ');
+    throw new Error(errors || 'Invalid form fields');
+  }
+
+  if (response.status === 'SIGN_UP_NOT_ALLOWED') {
+    // SuperTokens surfaces our backend "you must accept terms" /
+    // "domain not allowed" rejections through this status. The reason
+    // string is the human-readable message we returned from the override.
+    throw new Error(response.reason || 'Sign up not allowed');
   }
 
   if (response.status !== 'OK') {
     throw new Error(`Sign up failed: ${response.status}`);
   }
 
-  return response.user;
+  return response.user as ReturnType<typeof EmailPassword.signUp> extends Promise<infer R>
+    ? R extends { user: infer U }
+      ? U
+      : never
+    : never;
 }
 
 export async function signIn(email: string, password: string) {

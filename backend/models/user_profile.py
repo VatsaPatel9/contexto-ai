@@ -30,6 +30,12 @@ class UserProfile(Base):
     tokens_out = Column(BigInteger, nullable=False, default=0)
     token_limit = Column(BigInteger, nullable=True, default=None)  # None = unlimited
 
+    # Terms-of-Service / Privacy acceptance — recorded at signup. The
+    # constant ``CURRENT_TERMS_VERSION`` defines the version string the
+    # server will accept; mismatch is treated as not-accepted.
+    terms_version = Column(String(64), nullable=True, default=None)
+    terms_accepted_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

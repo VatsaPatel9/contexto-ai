@@ -42,6 +42,8 @@ def init_db() -> None:
 
     # Ensure new columns exist on pre-existing tables (lightweight migration)
     _add_column_if_missing(engine, "user_profiles", "display_name", "VARCHAR(255)")
+    _add_column_if_missing(engine, "user_profiles", "terms_version", "VARCHAR(64)")
+    _add_column_if_missing(engine, "user_profiles", "terms_accepted_at", "TIMESTAMPTZ")
     _add_column_if_missing(engine, "documents", "deleted_at", "TIMESTAMPTZ")
     _add_column_if_missing(engine, "datasets", "course_id", "VARCHAR(255)")
     _add_column_if_missing(engine, "datasets", "created_by", "VARCHAR(255)")

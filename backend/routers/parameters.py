@@ -6,13 +6,19 @@ from fastapi import APIRouter, Depends
 
 from backend.config import Settings
 from backend.dependencies import get_settings
+from backend.services.terms import CURRENT_TERMS_VERSION
 
 router = APIRouter()
 
 
 @router.get("/api/parameters")
 def get_parameters(settings: Settings = Depends(get_settings)):
-    """Return the tutor greeting, suggested starter questions, and course name."""
+    """Return the tutor greeting, suggested starter questions, and course name.
+
+    Also returns ``terms_version`` so the signup form can submit the
+    *exact* string the server expects. If the constant is bumped, the
+    cached UI re-fetches and stays in lockstep with the gate.
+    """
     course = settings.course_name
     return {
         "opening_statement": (
@@ -26,4 +32,5 @@ def get_parameters(settings: Settings = Depends(get_settings)):
             "I'm working on a homework problem and need some guidance.",
         ],
         "course_name": course,
+        "terms_version": CURRENT_TERMS_VERSION,
     }

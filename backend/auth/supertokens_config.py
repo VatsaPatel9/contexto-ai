@@ -241,13 +241,33 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
         api_options: EmailPasswordAPIOptions = None,
         user_context=None,
     ):
+        from backend.services.terms import CURRENT_TERMS_VERSION
+
         email = ""
         display_name = ""
+        terms_accepted_value = ""
+        terms_version_value = ""
         for field in form_fields:
             if field.id == "email":
                 email = field.value.strip().lower()
             elif field.id == "display_name":
                 display_name = field.value.strip()
+            elif field.id == "terms_accepted":
+                terms_accepted_value = (field.value or "").strip().lower()
+            elif field.id == "terms_version":
+                terms_version_value = (field.value or "").strip()
+
+        # Server-side gate: signup is rejected unless the request carries
+        # an affirmative acceptance of the *current* Terms/Privacy version.
+        # Anyone who skips the UI checkbox (XSS, raw curl, etc.) lands
+        # here with terms_accepted != "true" and is bounced.
+        if terms_accepted_value != "true" or terms_version_value != CURRENT_TERMS_VERSION:
+            from supertokens_python.recipe.emailpassword.interfaces import (
+                SignUpPostNotAllowedResponse,
+            )
+            return SignUpPostNotAllowedResponse(
+                reason="You must accept the Terms of Service and Privacy Policy to create an account."
+            )
 
         # Email-domain gate. Controlled by RESTRICT_EMAIL_DOMAIN env var
         # (default True). When enabled, only ALLOWED_EMAIL_DOMAIN passes.
@@ -275,20 +295,26 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
             from supertokens_python.recipe.userroles.asyncio import add_role_to_user
             await add_role_to_user(tenant_id, result.user.id, "user")
 
-            # Save display_name to UserProfile
-            if display_name:
+            # Save display_name + Terms acceptance to UserProfile.
+            # The acceptance row is the audit trail; we already gated the
+            # request above, so reaching this branch means the user
+            # affirmatively agreed to ``CURRENT_TERMS_VERSION``.
+            try:
+                from datetime import datetime, timezone
+                from backend.database import SessionLocal
+                from backend.models.user_profile import get_or_create_profile
+                db = SessionLocal()
                 try:
-                    from backend.database import SessionLocal
-                    from backend.models.user_profile import get_or_create_profile
-                    db = SessionLocal()
-                    try:
-                        profile = get_or_create_profile(db, result.user.id)
+                    profile = get_or_create_profile(db, result.user.id)
+                    if display_name:
                         profile.display_name = display_name
-                        db.commit()
-                    finally:
-                        db.close()
-                except Exception:
-                    pass  # Non-fatal — user can set name later from profile
+                    profile.terms_version = CURRENT_TERMS_VERSION
+                    profile.terms_accepted_at = datetime.now(timezone.utc)
+                    db.commit()
+                finally:
+                    db.close()
+            except Exception:
+                pass  # Non-fatal — user can re-confirm later from the profile flow
 
             # Fire the verification email as part of the signup response
             # so every /signup call ships a link — the way a professional
@@ -336,6 +362,12 @@ def init_supertokens(settings: Settings) -> None:
             sign_up_feature=emailpassword.InputSignUpFeature(
                 form_fields=[
                     InputFormField(id="display_name", optional=True),
+                    # Terms / Privacy acceptance is required at signup.
+                    # The override above also re-validates these values
+                    # so a client that drops the formField is rejected
+                    # rather than silently passing through.
+                    InputFormField(id="terms_accepted"),
+                    InputFormField(id="terms_version"),
                 ],
             ),
             override=emailpassword.InputOverrideConfig(

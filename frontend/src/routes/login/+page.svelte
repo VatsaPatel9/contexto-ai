@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { login, register } from '$lib/stores/auth';
   import { isEmailVerified } from '$lib/auth/supertokens';
+  import { getParameters } from '$lib/apis/contexto';
 
   let mode: 'login' | 'register' = $state('login');
   let displayName = $state('');
@@ -13,8 +15,34 @@
   let showPassword = $state(false);
   let showConfirmPassword = $state(false);
 
+  // Terms / Privacy acceptance — required for both login and signup.
+  // The version we send to the server comes from /api/parameters so a
+  // bumped server constant naturally invalidates clients still showing
+  // the previous version.
+  let termsAccepted = $state(false);
+  let termsVersion = $state('');
+
+  onMount(async () => {
+    try {
+      const p = await getParameters();
+      termsVersion = p.terms_version;
+    } catch {
+      // If parameters can't load, leave version empty — the server-side
+      // signup gate will reject anyway, surfacing a clear error.
+    }
+  });
+
+  let canSubmit = $derived(
+    !loading && termsAccepted && !!termsVersion && !!email.trim() && !!password,
+  );
+
   async function handleSubmit() {
     error = '';
+
+    if (!termsAccepted) {
+      error = 'You must accept the Terms of Service and Privacy Policy to continue.';
+      return;
+    }
 
     if (mode === 'register' && !displayName.trim()) {
       error = 'Display name is required';
@@ -36,10 +64,10 @@
       if (mode === 'login') {
         await login(email, password);
       } else {
-        // Backend's sign_up_post override fires the verification email
-        // automatically as part of this call — the frontend doesn't
-        // need to kick it off.
-        await register(email, password, displayName.trim());
+        // Backend's sign_up_post override re-validates terms_accepted
+        // and terms_version, then fires the verification email — the
+        // frontend doesn't need to kick anything else off.
+        await register(email, password, displayName.trim(), termsVersion);
       }
 
       // If the email is verified, land in the app. If not, the backend
@@ -205,9 +233,25 @@
         </div>
       {/if}
 
+      <label class="flex items-start gap-2.5 text-xs text-gray-600 dark:text-gray-400 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          bind:checked={termsAccepted}
+          class="mt-0.5 size-4 rounded border-gray-300 dark:border-gray-600
+                 text-blue-600 focus:ring-blue-500 focus:ring-offset-0
+                 bg-white dark:bg-gray-700"
+        />
+        <span class="leading-snug">
+          I have read and agree to the
+          <a href="/terms" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline">Terms of Service</a>
+          and
+          <a href="/privacy" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline">Privacy Policy</a>.
+        </span>
+      </label>
+
       <button
         type="submit"
-        disabled={loading}
+        disabled={!canSubmit}
         class="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium
                rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
