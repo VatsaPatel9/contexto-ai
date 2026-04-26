@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { toast } from 'svelte-sonner';
   import { authStore } from '$lib/stores/auth';
+  import { adminCounts } from '$lib/stores';
   import {
     listUsers,
     getUserProfile,
@@ -31,7 +33,14 @@
   // ── State ───────────────────────────────────────────────────────────
 
   type Tab = 'users' | 'courses' | 'violations';
-  let activeTab = $state<Tab>('users');
+
+  // Tab is driven by the URL ?tab=… so the global Sidebar (now the only
+  // panel) can switch tabs without coupling to this page's state.
+  let activeTab = $derived((($page.url.searchParams.get('tab') as Tab) || 'users'));
+
+  function setTab(t: Tab) {
+    goto(`/admin?tab=${t}`);
+  }
 
   // Courses
   let courses = $state<Course[]>([]);
@@ -528,6 +537,15 @@
       loadCourses();
     }
   });
+
+  // Publish counts to the global Sidebar.
+  $effect(() => {
+    adminCounts.set({
+      users: allUserIds().length,
+      courses: courses.length,
+      violations: violations.length,
+    });
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -556,69 +574,8 @@
 {/if}
 
 <!-- ═══ MAIN LAYOUT ═══ -->
-<div class="flex h-full">
-  <!-- Left sidebar -->
-  <aside class="w-56 shrink-0 border-r border-gray-100 dark:border-gray-800 flex flex-col bg-white dark:bg-gray-900">
-    <div class="px-4 py-4 border-b border-gray-100 dark:border-gray-800">
-      <h1 class="text-base font-semibold text-gray-900 dark:text-white">Admin Panel</h1>
-    </div>
-    <nav class="flex-1 px-2 py-3 space-y-0.5">
-      <button onclick={() => goto('/chat')}
-              class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium
-                     text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition">
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-        Chat
-      </button>
-      <div class="h-px bg-gray-100 dark:bg-gray-800 my-2 mx-2"></div>
-      <button onclick={() => activeTab = 'users'}
-              class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition
-                     {activeTab === 'users'
-                       ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}">
-        <span class="flex items-center gap-2.5">
-          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-          </svg>
-          Users
-        </span>
-        <span class="text-[10px] {activeTab === 'users' ? 'opacity-70' : 'text-gray-400'}">{allUserIds().length}</span>
-      </button>
-      <button onclick={() => activeTab = 'courses'}
-              class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition
-                     {activeTab === 'courses'
-                       ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}">
-        <span class="flex items-center gap-2.5">
-          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-          </svg>
-          Courses
-        </span>
-        {#if coursesLoaded}
-          <span class="text-[10px] {activeTab === 'courses' ? 'opacity-70' : 'text-gray-400'}">{courses.length}</span>
-        {/if}
-      </button>
-      <button onclick={() => activeTab = 'violations'}
-              class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition
-                     {activeTab === 'violations'
-                       ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}">
-        <span class="flex items-center gap-2.5">
-          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          Violations
-        </span>
-        {#if violations.length > 0}
-          <span class="px-1.5 py-0.5 text-[10px] rounded-full bg-red-500 text-white">{violations.length}</span>
-        {/if}
-      </button>
-    </nav>
-  </aside>
-
-  <!-- Main content -->
+<!-- Sidebar nav lives in the global Sidebar.svelte (driven by ?tab=…). -->
+<div class="flex flex-col h-full">
   <div class="flex-1 overflow-y-auto">
     <div class="max-w-5xl mx-auto w-full">
       {#if activeTab === 'users'}
@@ -1193,7 +1150,7 @@
               <div class="flex items-center justify-between px-3 py-3 rounded-xl
                           hover:bg-gray-50 dark:hover:bg-gray-800/50 transition cursor-pointer
                           border border-gray-100 dark:border-gray-800"
-                   onclick={() => { activeTab = 'users'; selectUser(v.user_id); }}>
+                   onclick={() => { setTab('users'); selectUser(v.user_id); }}>
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="shrink-0 size-8 rounded-full bg-gradient-to-br from-red-500 to-orange-500
                               flex items-center justify-center text-white text-xs font-bold uppercase">

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { toast } from 'svelte-sonner';
   import dayjs from 'dayjs';
 
@@ -10,6 +11,7 @@
     showSidebar,
     mobile,
     currentChatId,
+    adminCounts,
     type Conversation
   } from '$lib/stores';
   import { authStore, logout, getDisplayLabel } from '$lib/stores/auth';
@@ -19,6 +21,17 @@
   } from '$lib/apis/contexto';
 
   let showUserMenu = $state(false);
+
+  // Switch sidebar contents based on the active route. On /admin we render
+  // admin nav (Users / Courses / Violations) instead of the chat list, so
+  // there's one sidebar — never two stacked panels.
+  let isAdminRoute = $derived($page.url.pathname.startsWith('/admin'));
+  let activeAdminTab = $derived($page.url.searchParams.get('tab') || 'users');
+
+  function gotoAdminTab(tab: 'users' | 'courses' | 'violations') {
+    goto(`/admin?tab=${tab}`);
+    if ($mobile) showSidebar.set(false);
+  }
 
   // Reload conversations when auth state changes (login/logout/user switch)
   $effect(() => {
@@ -109,60 +122,130 @@
     <!-- Header -->
     <div class="flex items-center justify-between p-3 border-b border-gray-100 dark:border-gray-850">
       <div class="flex items-center gap-2">
-        <img src="/mascot-nav.png" alt="Contexto" class="rounded-full" width="24" height="24" />
-        <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Contexto</span>
+        {#if isAdminRoute}
+          <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Admin Panel</span>
+        {:else}
+          <img src="/mascot-nav.png" alt="Contexto" class="rounded-full" width="24" height="24" />
+          <span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Contexto</span>
+        {/if}
       </div>
-      <button
-        onclick={newChat}
-        class="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
-        title="New chat"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-600 dark:text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19" />
-          <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-      </button>
-    </div>
-
-    <!-- Chat list -->
-    <div class="flex-1 overflow-y-auto p-2 space-y-3">
-      {#if $conversations.length === 0}
-        <p class="text-xs text-gray-400 dark:text-gray-600 text-center mt-8">
-          No conversations yet
-        </p>
-      {:else}
-        {#each Object.entries(groupedChats()) as [dateLabel, chatGroup]}
-          <div>
-            <p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-600 px-2 mb-1">
-              {dateLabel}
-            </p>
-            {#each chatGroup as conv (conv.id)}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                onclick={() => openChat(conv.id)}
-                class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors group cursor-pointer
-                       {$currentChatId === conv.id
-                         ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-                         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
-              >
-                <span class="flex-1 truncate">{conv.name || 'Untitled'}</span>
-                <button
-                  onclick={(e) => deleteChat(e, conv.id)}
-                  class="shrink-0 opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-gray-700 transition-all"
-                  title="Delete conversation"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
-              </div>
-            {/each}
-          </div>
-        {/each}
+      {#if !isAdminRoute}
+        <button
+          onclick={newChat}
+          class="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+          title="New chat"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-600 dark:text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
       {/if}
     </div>
+
+    {#if isAdminRoute}
+      <!-- Admin nav -->
+      <nav class="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <button
+          onclick={() => goto('/chat')}
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Chat
+        </button>
+        <div class="h-px bg-gray-100 dark:bg-gray-850 my-2 mx-2"></div>
+        <button
+          onclick={() => gotoAdminTab('users')}
+          class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {activeAdminTab === 'users'
+                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                   : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+        >
+          <span class="flex items-center gap-2.5">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            Users
+          </span>
+          <span class="text-[10px] {activeAdminTab === 'users' ? 'opacity-70' : 'text-gray-400'}">{$adminCounts.users}</span>
+        </button>
+        <button
+          onclick={() => gotoAdminTab('courses')}
+          class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {activeAdminTab === 'courses'
+                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                   : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+        >
+          <span class="flex items-center gap-2.5">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+            </svg>
+            Courses
+          </span>
+          <span class="text-[10px] {activeAdminTab === 'courses' ? 'opacity-70' : 'text-gray-400'}">{$adminCounts.courses}</span>
+        </button>
+        <button
+          onclick={() => gotoAdminTab('violations')}
+          class="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {activeAdminTab === 'violations'
+                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                   : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+        >
+          <span class="flex items-center gap-2.5">
+            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            Violations
+          </span>
+          {#if $adminCounts.violations > 0}
+            <span class="px-1.5 py-0.5 text-[10px] rounded-full bg-red-500 text-white">{$adminCounts.violations}</span>
+          {/if}
+        </button>
+      </nav>
+    {:else}
+      <!-- Chat list -->
+      <div class="flex-1 overflow-y-auto p-2 space-y-3">
+        {#if $conversations.length === 0}
+          <p class="text-xs text-gray-400 dark:text-gray-600 text-center mt-8">
+            No conversations yet
+          </p>
+        {:else}
+          {#each Object.entries(groupedChats()) as [dateLabel, chatGroup]}
+            <div>
+              <p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-600 px-2 mb-1">
+                {dateLabel}
+              </p>
+              {#each chatGroup as conv (conv.id)}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  onclick={() => openChat(conv.id)}
+                  class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors group cursor-pointer
+                         {$currentChatId === conv.id
+                           ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                           : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+                >
+                  <span class="flex-1 truncate">{conv.name || 'Untitled'}</span>
+                  <button
+                    onclick={(e) => deleteChat(e, conv.id)}
+                    class="shrink-0 opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-300 dark:hover:bg-gray-700 transition-all"
+                    title="Delete conversation"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
 
     <!-- User profile menu (bottom of sidebar, like Open WebUI) -->
     <div class="relative border-t border-gray-100 dark:border-gray-850">

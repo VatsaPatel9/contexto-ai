@@ -181,6 +181,14 @@ export const currentChatId = writable<string | null>(null);
 export const mobile = writable<boolean>(false);
 export const showSidebar = writable<boolean>(true);
 
+// ── Admin section counts (populated by /admin page, read by Sidebar) ───
+
+export const adminCounts = writable<{ users: number; courses: number; violations: number }>({
+  users: 0,
+  courses: 0,
+  violations: 0,
+});
+
 // ── Parameters (from backend /api/parameters) ──────────────────────────
 
 export type AppParameters = {
