@@ -12,7 +12,13 @@ import EmailPassword from 'supertokens-web-js/recipe/emailpassword';
 import EmailVerification from 'supertokens-web-js/recipe/emailverification';
 import STGeneralError from 'supertokens-web-js/utils/error';
 
-const API_DOMAIN = import.meta.env.VITE_API_BASE_URL;
+// Default to same-origin when no override is set. This pairs with the
+// vite dev proxy and any production reverse-proxy setup so the
+// session cookie stays first-party — Safari and Chrome Incognito
+// drop third-party cookies, which would otherwise break sign-in.
+const API_DOMAIN =
+  import.meta.env.VITE_API_BASE_URL ||
+  (typeof window !== 'undefined' ? window.location.origin : '');
 
 let initialized = false;
 
@@ -107,7 +113,7 @@ export async function sendEmailVerification(): Promise<SendVerificationResult> {
  * doesn't care about session state — the token is the auth — so the
  * link works on any device.
  */
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = API_DOMAIN;
 
 export async function verifyEmailFromToken(): Promise<
   'OK' | 'INVALID_TOKEN' | 'ERROR'

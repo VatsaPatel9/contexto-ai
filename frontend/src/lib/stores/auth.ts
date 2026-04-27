@@ -39,15 +39,23 @@ export const authStore = writable<AuthState>(initial);
 
 /**
  * Fetch display_name and email from the backend /api/me endpoint.
+ *
+ * Returns ``null`` (not an empty object) when the call fails so the
+ * caller can distinguish "profile is empty" from "the cookie wasn't
+ * sent / server didn't recognize us." Cross-origin cookie blocking
+ * (Safari, Chrome Incognito) shows up here as a non-OK response — we
+ * surface that to ``refreshAuthState`` which then refuses to mark the
+ * user authenticated, instead of leaving the UI in a half-authed
+ * state that then claims the email isn't verified.
  */
-async function fetchProfile(): Promise<{ display_name: string | null; email: string | null }> {
+async function fetchProfile(): Promise<{ display_name: string | null; email: string | null } | null> {
   try {
     const res = await fetch(`${API_BASE}/api/me`, { credentials: 'include' });
-    if (!res.ok) return { display_name: null, email: null };
+    if (!res.ok) return null;
     const data = await res.json();
     return { display_name: data.display_name ?? null, email: data.email ?? null };
   } catch {
-    return { display_name: null, email: null };
+    return null;
   }
 }
 
@@ -58,15 +66,31 @@ async function fetchProfile(): Promise<{ display_name: string | null; email: str
 export async function refreshAuthState() {
   const active = await isSessionActive();
   if (active) {
+    const profile = await fetchProfile();
+    if (!profile) {
+      // Client-side session cookie exists but the server can't see it
+      // (third-party cookie blocked, expired, network down). Treat as
+      // unauthenticated so route gates work and the UI doesn't loop on
+      // "verify your email" — re-running through /login on a same-
+      // origin proxy will let the cookie become first-party and recover.
+      authStore.set({
+        initialized: true,
+        authenticated: false,
+        userId: null,
+        displayName: null,
+        email: null,
+        roles: [],
+      });
+      return;
+    }
     const userId = await getUserId();
     const roles = await getUserRoles();
-    const { display_name, email } = await fetchProfile();
     authStore.set({
       initialized: true,
       authenticated: true,
       userId,
-      displayName: display_name,
-      email,
+      displayName: profile.display_name,
+      email: profile.email,
       roles,
     });
   } else {
@@ -97,6 +121,18 @@ export async function logout() {
   const { conversations, conversationsLoaded } = await import('$lib/stores');
   conversations.set([]);
   conversationsLoaded.set(false);
+
+  // Navigate explicitly so the user never lingers on a protected URL
+  // (/chat/<old-id>, /admin/...) waiting for the layout's $effect to
+  // catch up. The login page is the only safe landing for an
+  // unauthenticated user. Lazy-import goto so this module stays usable
+  // outside a client/component context.
+  try {
+    const { goto } = await import('$app/navigation');
+    await goto('/login');
+  } catch {
+    // SSR / non-client context — caller can navigate themselves.
+  }
 }
 
 /**
