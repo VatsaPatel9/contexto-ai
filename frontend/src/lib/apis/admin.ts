@@ -177,10 +177,11 @@ export async function listCourses(): Promise<Course[]> {
 }
 
 export async function createCourse(body: {
-  course_id: string;
   name: string;
   description?: string;
 }): Promise<Course> {
+  // course_id is server-generated (UUID) so the public identifier
+  // can't go stale when the admin renames the course later.
   const res = await adminFetch('/api/admin/courses', {
     method: 'POST',
     body: JSON.stringify(body),

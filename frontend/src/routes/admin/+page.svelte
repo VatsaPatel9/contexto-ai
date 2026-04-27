@@ -47,7 +47,6 @@
   let courses = $state<Course[]>([]);
   let coursesLoaded = $state(false);
 
-  let newCourseId = $state('');
   let newCourseName = $state('');
   let newCourseDesc = $state('');
   let creatingCourse = $state(false);
@@ -405,21 +404,18 @@
   }
 
   async function handleCreateCourse() {
-    const id = newCourseId.trim();
     const name = newCourseName.trim();
-    if (!id || !name) {
-      toast.error('Course ID and name are required');
+    if (!name) {
+      toast.error('Course name is required');
       return;
     }
     creatingCourse = true;
     try {
       const created = await createCourse({
-        course_id: id,
         name,
         description: newCourseDesc.trim() || undefined,
       });
       toast.success(`Course "${created.name}" created`);
-      newCourseId = '';
       newCourseName = '';
       newCourseDesc = '';
       goto(`/admin/courses/${encodeURIComponent(created.course_id)}`);
@@ -830,19 +826,15 @@
         <!-- ═══ COURSES TAB ═══ -->
         <div class="px-4 pt-4 pb-8 space-y-6">
 
-          <!-- Create course (compact) -->
+          <!-- Create course (compact). Identifier is auto-generated as
+               a UUID — admin only picks the display name and description,
+               which both stay editable later. -->
           <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">
             <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-3">New Course</div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <input type="text" bind:value={newCourseId} placeholder="course_id (e.g. bio7-control)"
-                     class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                            focus:ring-1 focus:ring-blue-500 transition" />
-              <input type="text" bind:value={newCourseName} placeholder="Display name (e.g. Biology 7 — Control)"
-                     class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                            focus:ring-1 focus:ring-blue-500 transition" />
-            </div>
+            <input type="text" bind:value={newCourseName} placeholder="Display name (e.g. Biology 7 — Control)"
+                   class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                          bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                          focus:ring-1 focus:ring-blue-500 transition" />
             <div class="flex gap-2 mt-2">
               <input type="text" bind:value={newCourseDesc} placeholder="Description (optional)"
                      class="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg

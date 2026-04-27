@@ -36,7 +36,12 @@ router = APIRouter(prefix="/api/admin/courses", tags=["admin-courses"])
 # ---------------------------------------------------------------------------
 
 class CourseCreateRequest(BaseModel):
-    course_id: str
+    # course_id is the immutable public identifier used in URLs and
+    # API paths. Don't accept it from the client — generate a UUID
+    # server-side so renaming the course never leaves a stale slug
+    # behind. Older courses created when this was caller-supplied
+    # keep their human-readable slugs (the column accepts any unique
+    # string), so this is back-compatible at the data layer.
     name: str
     description: Optional[str] = None
 
@@ -164,14 +169,19 @@ async def create_course(
     db: DBSession = Depends(get_db),
 ):
     """Create a new course. The caller becomes its ``created_by`` owner."""
-    course_id = body.course_id.strip()
     name = body.name.strip()
-    if not course_id or not name:
-        raise HTTPException(status_code=400, detail="course_id and name are required")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
 
-    existing = db.query(Dataset).filter(Dataset.course_id == course_id).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Course with this course_id already exists")
+    # Always allocate a fresh UUID. The collision retry handles the
+    # absurdly unlikely case where uuid4 lands on an existing slug
+    # (vanishingly low, but defends against pathological seeds).
+    for _ in range(3):
+        course_id = str(uuid.uuid4())
+        if not db.query(Dataset).filter(Dataset.course_id == course_id).first():
+            break
+    else:
+        raise HTTPException(status_code=500, detail="Failed to allocate course id")
 
     user_id = session.get_user_id()
     dataset = Dataset(
