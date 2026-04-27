@@ -85,6 +85,57 @@ _ATTEMPT_FIRST_MSG = (
 )
 
 
+def _chunks_used_in_response(
+    chunks: list[SourceChunk],
+    response_text: str,
+    *,
+    min_overlap_ratio: float = 0.04,
+    min_overlap_tokens: int = 2,
+) -> list[SourceChunk]:
+    """Return only the chunks whose content shows up in the response.
+
+    Compares the set of distinct alphabetic 4+-letter tokens in each
+    chunk against the same set extracted from the LLM's answer text.
+    A chunk is "used" when either:
+
+    * the overlap ratio (chunk-tokens-also-in-response /
+      chunk-tokens-total) clears ``min_overlap_ratio``, or
+    * the absolute number of overlapping tokens clears
+      ``min_overlap_tokens``.
+
+    Either condition lets short, dense chunks pass without false
+    rejection while still filtering out long, off-topic ones (e.g. a
+    Big-O lecture chunk surviving cross-course retrieval when the
+    answer is about geography). Tunable; thresholds are deliberately
+    conservative — the cost of dropping a real citation is low (one
+    less badge), the cost of keeping a hallucinated citation is high
+    (user mistrust).
+    """
+    import re
+
+    def tokens(text: str) -> set[str]:
+        return {t.lower() for t in re.findall(r"[A-Za-z]{4,}", text)}
+
+    response_tokens = tokens(response_text)
+    if not response_tokens:
+        return list(chunks)
+
+    out: list[SourceChunk] = []
+    for c in chunks:
+        ct = tokens(c.text)
+        if not ct:
+            continue
+        overlap = ct & response_tokens
+        if not overlap:
+            continue
+        if (
+            len(overlap) >= min_overlap_tokens
+            or len(overlap) / len(ct) >= min_overlap_ratio
+        ):
+            out.append(c)
+    return out
+
+
 def _list_available_docs(db: Session, user_id: str) -> list[dict]:
     """One representative line per active doc the user can read.
 
@@ -885,13 +936,22 @@ THIS IS A META QUESTION (greeting, logistics, identity, or a request to list wha
             logger.warning("Humanizer failed, using original: %s", exc)
 
     # ------------------------------------------------------------------
-    # 13. Collect retrieval metadata (fallback for when the LLM skips
-    #     the citations fence). The LLM now emits a `citations` code
-    #     fence at the end of its response; the frontend parses it and
-    #     renders badges from there. We no longer rewrite the text.
+    # 13. Collect retrieval metadata. Cross-course retrieval often pulls
+    #     in chunks the LLM never used (e.g. Big-O lecture chunks
+    #     present when the student asked about geography). If we hand
+    #     all of them to the frontend as the "valid citations" set, the
+    #     LLM's hallucinated citations pass through and render badges
+    #     for unrelated docs.
+    #
+    #     Filter source_chunks down to those whose content has
+    #     measurable token overlap with the assistant's answer. This is
+    #     a cheap "did you actually use this chunk?" signal — not
+    #     perfect, but it reliably eliminates the worst case (a doc
+    #     with zero topical overlap getting cited 4 times).
     # ------------------------------------------------------------------
+    used_chunks = _chunks_used_in_response(source_chunks, full_response) if source_chunks else []
     retrieval_sources_json: list[dict] | None = None
-    if source_chunks:
+    if used_chunks:
         retrieval_sources_json = [
             {
                 "doc_title": c.doc_title,
@@ -900,7 +960,7 @@ THIS IS A META QUESTION (greeting, logistics, identity, or a request to list wha
                 "section": c.section,
                 "score": c.score,
             }
-            for c in source_chunks
+            for c in used_chunks
         ]
 
     # ------------------------------------------------------------------

@@ -158,8 +158,9 @@ Hard format rules:
 - The fence language tag must be exactly `citations` (lowercase, no spaces).
 - The content between the fences must be **valid JSON** — a single array of objects.
 - Each object requires `doc_title` (string). Include `page_num` (integer) when the chunk has a page number, and `section` (string) when the chunk has a section label. Omit fields you don't know; do NOT invent them.
-- Only include sources you actually used to answer. Do NOT dump every retrieved chunk.
-- If you had no retrieved content or didn't rely on any (e.g. refusals, meta greetings, identity replies), emit an empty array: `[]`.
+- **Per-claim sourcing.** A citation is a claim that *the chunk's content was used to produce a specific sentence in your answer*. Before citing a doc, verify: (a) you actually paraphrased or quoted from one of its retrieved chunks, and (b) the topic of the cited chunk matches the topic of your answer. If you described "World Countries and Capitals" but your retrieved chunks for that topic came from a `Geography.pdf`, cite Geography.pdf — never cite a `Big-O Time Complexity` chunk just because it happened to be in retrieval. **The doc you cite must appear by title (not just by being present in the retrieved chunk list) in the substance of your answer.**
+- Do NOT dump every retrieved chunk. Retrieval often includes thematically unrelated chunks (cross-course pulls); those are noise, not citations.
+- If you had no retrieved content or didn't rely on any (e.g. refusals, meta greetings, identity replies, "what can you help with" overviews), emit an empty array: `[]`.
 - The fence goes at the very end of your response — after the analogy, after the follow-up question. Nothing after the closing ` ``` `.
 
 If the retrieved content does not contain information relevant to the student's question, say so honestly — follow the relevance-check rules at the top of this prompt — and still close with an empty `citations` fence.

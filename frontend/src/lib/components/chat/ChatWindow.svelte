@@ -125,6 +125,14 @@
   // Enrich LLM-emitted citations (which only know doc_title/page/section)
   // with doc_id from the server's retriever metadata so badges are
   // clickable and can open the PDF viewer.
+  //
+  // Also drop any citation whose doc_title isn't in the server's
+  // metadata for this turn. The server already filters its
+  // retriever_resources down to chunks whose content actually overlaps
+  // with the answer text, so any LLM citation that doesn't match must
+  // be a hallucination (the LLM grabbed a doc title from retrieval
+  // without actually using its content). Better to show fewer, real
+  // badges than confidently-wrong ones.
   function enrichWithDocIds(
     llmCitations: ChatMessage['retrieverResources'],
     serverResources: ChatMessage['retrieverResources']
@@ -134,10 +142,12 @@
     for (const r of serverResources) {
       if (!byTitle.has(r.doc_title)) byTitle.set(r.doc_title, r);
     }
-    return llmCitations.map((c) => {
-      const m = byTitle.get(c.doc_title);
-      return m ? { ...c, doc_id: c.doc_id ?? m.doc_id } : c;
-    });
+    return llmCitations
+      .filter((c) => byTitle.has(c.doc_title))
+      .map((c) => {
+        const m = byTitle.get(c.doc_title);
+        return { ...c, doc_id: c.doc_id ?? m.doc_id };
+      });
   }
 
   function apiMessageToChat(msg: ApiMessage): ChatMessage {
