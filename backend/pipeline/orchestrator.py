@@ -97,7 +97,6 @@ def _list_available_docs(db: Session, user_id: str) -> list[dict]:
     own private uploads. Soft-deleted and non-ready rows are excluded.
     """
     from backend.models.dataset import Document, DocumentSegment
-    from backend.models.user_course import UserCourse
     from sqlalchemy import and_, or_
 
     enrolled_dataset_ids = [
@@ -548,7 +547,6 @@ async def process_chat_message(
     topic_snippets: list[str] = []
     try:
         from backend.models.dataset import Document
-        from backend.models.user_course import UserCourse
 
         enrolled_dataset_ids = [
             row.dataset_id
