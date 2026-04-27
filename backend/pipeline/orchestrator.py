@@ -85,21 +85,49 @@ _ATTEMPT_FIRST_MSG = (
 )
 
 
-def _list_available_docs(db: Session, dataset_id) -> list[dict]:
-    """One representative line per active doc in a dataset.
+def _list_available_docs(db: Session, user_id: str) -> list[dict]:
+    """One representative line per active doc the user can read.
 
     Used to populate "here's what I can help with" responses — both on
     refusals (so the user knows how to retry) and on explicit meta
     questions like "what topics can you help with?".
+
+    Visibility mirrors the chat retriever: every baseline doc, every
+    course doc in a dataset the user is enrolled in, plus the user's
+    own private uploads. Soft-deleted and non-ready rows are excluded.
     """
     from backend.models.dataset import Document, DocumentSegment
+    from backend.models.user_course import UserCourse
+    from sqlalchemy import and_, or_
+
+    enrolled_dataset_ids = [
+        row.dataset_id
+        for row in db.query(UserCourse.dataset_id)
+        .filter(UserCourse.user_id == user_id)
+        .all()
+    ]
+
+    visibility_clauses = [
+        Document.uploader_role == "baseline",
+        and_(
+            Document.uploader_role == "private",
+            Document.uploaded_by == user_id,
+        ),
+    ]
+    if enrolled_dataset_ids:
+        visibility_clauses.append(
+            and_(
+                Document.uploader_role == "course",
+                Document.dataset_id.in_(enrolled_dataset_ids),
+            )
+        )
 
     docs = (
         db.query(Document)
         .filter(
-            Document.dataset_id == dataset_id,
             Document.deleted_at.is_(None),
             Document.status == "ready",
+            or_(*visibility_clauses),
         )
         .order_by(Document.created_at.desc())
         .limit(30)
@@ -478,6 +506,11 @@ async def process_chat_message(
             effective_dataset_id = str(dataset.id)
     if retriever:
         try:
+            # ``effective_dataset_id`` is no longer used by the retriever
+            # for filtering — the SQL now scopes on user_id (baseline +
+            # all enrolled course datasets + own private). We still pass
+            # it to keep the call signature consistent until callers are
+            # cleaned up.
             source_chunks = retriever.retrieve(
                 working_query,
                 effective_dataset_id,
@@ -490,7 +523,7 @@ async def process_chat_message(
             # primary floor against formal lecture chunks. Retry once at a
             # looser threshold and let the LLM gate relevance via the
             # system prompt's lean-toward-answering rule.
-            if not source_chunks and effective_dataset_id:
+            if not source_chunks:
                 source_chunks = retriever.retrieve(
                     working_query,
                     effective_dataset_id,
@@ -505,31 +538,50 @@ async def process_chat_message(
     # 7b. STRICT: Refuse if no relevant context found in vectors
     # Only allow meta questions (greetings, "who are you") without context
     # ------------------------------------------------------------------
-    # Only sample topic previews from a dataset the user is allowed to read,
-    # otherwise we'd leak course content to unenrolled users.
+    # Topic previews and the "do they have any course content?" flag
+    # must reflect every course the caller is enrolled in, not just the
+    # one currently selected — the retriever now searches across all
+    # enrolled datasets plus baseline plus own private uploads, so the
+    # orchestrator's gating logic has to match or it'll falsely report
+    # "no materials uploaded" when other accessible content exists.
     has_course_content = False
     topic_snippets: list[str] = []
-    if dataset and effective_dataset_id:
-        try:
-            from backend.models.dataset import Document
+    try:
+        from backend.models.dataset import Document
+        from backend.models.user_course import UserCourse
+
+        enrolled_dataset_ids = [
+            row.dataset_id
+            for row in db.query(UserCourse.dataset_id)
+            .filter(UserCourse.user_id == user_id)
+            .all()
+        ]
+        if enrolled_dataset_ids:
             has_course_content = (
                 db.query(Document)
-                .filter(Document.dataset_id == dataset.id, Document.deleted_at.is_(None), Document.status == "ready")
+                .filter(
+                    Document.dataset_id.in_(enrolled_dataset_ids),
+                    Document.deleted_at.is_(None),
+                    Document.status == "ready",
+                )
                 .first()
             ) is not None
 
             if has_course_content:
-                # Grab the first ~100 chars from a few diverse segments for topic awareness
+                # Sample a few segments for the system-prompt's topic
+                # awareness flavor text. Pulling from any of the
+                # enrolled datasets is fine — the snippets are not
+                # used for retrieval, just for "what's covered" hints.
                 sample_rows = (
                     db.query(DocumentSegment.content)
-                    .filter(DocumentSegment.dataset_id == dataset.id)
+                    .filter(DocumentSegment.dataset_id.in_(enrolled_dataset_ids))
                     .order_by(DocumentSegment.position)
                     .limit(5)
                     .all()
                 )
                 topic_snippets = [row.content[:120] for row in sample_rows]
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Baseline content is system-wide — every learner can reach it
     # regardless of enrollment. So when judging whether the student
@@ -553,8 +605,8 @@ async def process_chat_message(
         pass
 
     if msg_type != "meta" and not source_chunks:
-        if has_course_content and effective_dataset_id:
-            available_docs = _list_available_docs(db, dataset.id)
+        if has_course_content:
+            available_docs = _list_available_docs(db, user_id)
             if available_docs:
                 docs_block = "\n".join(
                     f"- **{d['title']}**" + (f" — {d['preview']}" if d['preview'] else "")
@@ -701,11 +753,10 @@ Do NOT give a flat paragraph explanation. Always use structured bullets + analog
 """
     elif msg_type == "meta":
         docs_for_meta: list[dict] = []
-        if dataset:
-            try:
-                docs_for_meta = _list_available_docs(db, dataset.id)
-            except Exception:
-                docs_for_meta = []
+        try:
+            docs_for_meta = _list_available_docs(db, user_id)
+        except Exception:
+            docs_for_meta = []
 
         if docs_for_meta:
             docs_block = "\n".join(

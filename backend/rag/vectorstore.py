@@ -57,16 +57,20 @@ class PgVectorStore:
         Tri-state visibility filter on ``documents.uploader_role``:
 
         * ``baseline`` (super_admin uploads) — always included
-        * ``course`` (admin uploads) — included only when the segment's
-          dataset matches *dataset_id* AND the user is enrolled
-          in that dataset (row in ``user_courses``).
+        * ``course`` (admin uploads) — included for every dataset the
+          caller is enrolled in (row in ``user_courses``). The retriever
+          intentionally does NOT scope to a single "selected course":
+          a learner enrolled in multiple courses asks one question and
+          should get hits across all of them, plus baseline.
         * ``private`` (user uploads) — included only when uploaded by
-          the requesting user AND the segment's dataset matches.
+          the requesting user, regardless of which dataset they live in.
 
-        Pass ``dataset_id=None`` (or empty) to retrieve baseline content
-        only — useful when the user has not selected / is not enrolled
-        in any course.
+        ``dataset_id`` is currently unused for filtering — it's kept on
+        the signature for callers that haven't migrated yet. A real
+        single-dataset scope can be reintroduced via a different param
+        if we ever bring back per-course context.
         """
+        del dataset_id  # not used in the filter anymore; see docstring.
         query_sql = sa_text("""
             SELECT
                 ds.id,
@@ -85,15 +89,13 @@ class PgVectorStore:
                   d.uploader_role = 'baseline'
                   OR (
                       d.uploader_role = 'course'
-                      AND ds.dataset_id::text = :dataset_id
-                      AND :dataset_id IN (
-                          SELECT dataset_id::text FROM user_courses WHERE user_id = :user_id
+                      AND ds.dataset_id IN (
+                          SELECT dataset_id FROM user_courses WHERE user_id = :user_id
                       )
                   )
                   OR (
                       d.uploader_role = 'private'
                       AND d.uploaded_by = :user_id
-                      AND ds.dataset_id::text = :dataset_id
                   )
               )
             ORDER BY ds.embedding <=> :query_embedding
@@ -108,7 +110,6 @@ class PgVectorStore:
                 query_sql,
                 {
                     "query_embedding": embedding_str,
-                    "dataset_id": str(dataset_id) if dataset_id else "",
                     "score_threshold": score_threshold,
                     "top_k": top_k,
                     "user_id": user_id or "",
