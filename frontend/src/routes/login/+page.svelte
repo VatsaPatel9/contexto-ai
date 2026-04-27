@@ -32,8 +32,17 @@
     }
   });
 
+  // termsVersion is only sent by register() — login doesn't carry it,
+  // so don't gate the login button on it. If /api/parameters is
+  // briefly unreachable (network blip, backend just woke up on
+  // Railway), the user can still sign in. Signup still requires the
+  // version because the backend re-validates it server-side.
   let canSubmit = $derived(
-    !loading && termsAccepted && !!termsVersion && !!email.trim() && !!password,
+    !loading
+    && termsAccepted
+    && !!email.trim()
+    && !!password
+    && (mode === 'login' || !!termsVersion),
   );
 
   async function handleSubmit() {
