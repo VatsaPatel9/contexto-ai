@@ -195,6 +195,17 @@ export async function deleteCourse(courseId: string) {
   return res.json();
 }
 
+export async function updateCourse(
+  courseId: string,
+  body: { name?: string; description?: string | null },
+): Promise<Course> {
+  const res = await adminFetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 export async function listCourseMembers(courseId: string): Promise<CourseMember[]> {
   const res = await adminFetch(`/api/admin/courses/${encodeURIComponent(courseId)}/members`);
   return res.json();

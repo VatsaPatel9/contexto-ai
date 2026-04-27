@@ -17,6 +17,7 @@
     enrollMember,
     unenrollMember,
     deleteCourse,
+    updateCourse,
     type Course,
     type CourseMember,
   } from '$lib/apis/admin';
@@ -56,6 +57,54 @@
   let canSeeMaterials = $derived(
     course !== null && (isSuperAdmin || canUploadHere),
   );
+
+  // Edit affordance: only the owning admin or any super_admin can rename
+  // / re-describe the course. Same authorization the PUT endpoint
+  // enforces — surfacing it client-side just keeps the pencil hidden
+  // for users who'd 403.
+  let canEditCourse = $derived(
+    course !== null && (isSuperAdmin || course.created_by === $authStore.userId),
+  );
+
+  let editingMeta = $state(false);
+  let editName = $state('');
+  let editDescription = $state('');
+  let savingMeta = $state(false);
+
+  function startEditMeta() {
+    if (!course) return;
+    editName = course.name;
+    editDescription = course.description ?? '';
+    editingMeta = true;
+  }
+
+  function cancelEditMeta() {
+    editingMeta = false;
+    savingMeta = false;
+  }
+
+  async function saveMeta() {
+    if (!course) return;
+    const trimmed = editName.trim();
+    if (!trimmed) {
+      toast.error('Name cannot be empty');
+      return;
+    }
+    savingMeta = true;
+    try {
+      const updated = await updateCourse(course.course_id, {
+        name: trimmed,
+        description: editDescription.trim(),
+      });
+      course = updated;
+      editingMeta = false;
+      toast.success('Course updated');
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update course');
+    } finally {
+      savingMeta = false;
+    }
+  }
 
   function getUserRoleDisplay(userId: string): string[] {
     const roles: string[] = [];
@@ -218,15 +267,69 @@
             </svg>
             All courses
           </button>
-          <h1 class="text-2xl font-bold text-gray-900 dark:text-white mt-1 truncate">
-            {course?.name || (loading ? 'Loading…' : 'Unknown course')}
-          </h1>
-          <div class="flex items-center gap-3 mt-1">
-            <span class="text-xs font-mono text-gray-400">{courseId}</span>
-            <span class="text-xs text-gray-500">{members.length} member{members.length === 1 ? '' : 's'}</span>
-          </div>
-          {#if course?.description}
-            <p class="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-2xl">{course.description}</p>
+          {#if editingMeta && course}
+            <div class="mt-1 max-w-2xl space-y-2">
+              <input
+                type="text"
+                bind:value={editName}
+                disabled={savingMeta}
+                placeholder="Course name"
+                class="w-full px-3 py-2 text-2xl font-bold border border-gray-200 dark:border-gray-700 rounded-lg
+                       bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                       focus:ring-1 focus:ring-blue-500 transition disabled:opacity-50"
+              />
+              <textarea
+                bind:value={editDescription}
+                disabled={savingMeta}
+                rows="3"
+                placeholder="Optional description"
+                class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                       bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                       focus:ring-1 focus:ring-blue-500 transition resize-y disabled:opacity-50"
+              ></textarea>
+              <div class="flex items-center gap-3">
+                <span class="text-xs font-mono text-gray-400">{courseId}</span>
+                <span class="text-xs text-gray-500">{members.length} member{members.length === 1 ? '' : 's'}</span>
+              </div>
+              <div class="flex gap-2">
+                <button onclick={cancelEditMeta} disabled={savingMeta}
+                        class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700
+                               text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition
+                               disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onclick={saveMeta} disabled={savingMeta || !editName.trim()}
+                        class="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition
+                               font-medium disabled:opacity-50">
+                  {savingMeta ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          {:else}
+            <div class="flex items-center gap-2 mt-1">
+              <h1 class="text-2xl font-bold text-gray-900 dark:text-white truncate">
+                {course?.name || (loading ? 'Loading…' : 'Unknown course')}
+              </h1>
+              {#if canEditCourse}
+                <button onclick={startEditMeta}
+                        title="Edit course"
+                        aria-label="Edit course"
+                        class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50
+                               dark:hover:text-blue-400 dark:hover:bg-blue-900/20 transition">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                </button>
+              {/if}
+            </div>
+            <div class="flex items-center gap-3 mt-1">
+              <span class="text-xs font-mono text-gray-400">{courseId}</span>
+              <span class="text-xs text-gray-500">{members.length} member{members.length === 1 ? '' : 's'}</span>
+            </div>
+            {#if course?.description}
+              <p class="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-2xl">{course.description}</p>
+            {/if}
           {/if}
         </div>
         {#if course}

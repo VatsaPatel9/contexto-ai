@@ -41,6 +41,14 @@ class CourseCreateRequest(BaseModel):
     description: Optional[str] = None
 
 
+class CourseUpdateRequest(BaseModel):
+    # All fields optional so the client can PATCH-style send only what
+    # changed. ``course_id`` itself is intentionally not editable — it's
+    # the URL slug used by every existing dataset / enrollment / upload.
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
 class CourseResponse(BaseModel):
     course_id: str
     name: str
@@ -234,6 +242,57 @@ async def delete_course(
     db.delete(dataset)
     db.commit()
     return {"result": "success", "course_id": course_id}
+
+
+@router.put("/{course_id}", response_model=CourseResponse)
+async def update_course(
+    course_id: str,
+    body: CourseUpdateRequest,
+    session: SessionContainer = Depends(require_role(SUPER_ADMIN, ADMIN)),
+    db: DBSession = Depends(get_db),
+):
+    """Update mutable fields on a course (currently ``name`` and ``description``).
+
+    Authorization mirrors delete: super_admin can edit any course; admin
+    can edit only courses they created. ``course_id`` is the URL slug
+    and is not mutable here — change it via DB migration if you really
+    need to rename the slug.
+    """
+    user_id = session.get_user_id()
+    roles = await get_user_roles(session)
+
+    dataset = db.query(Dataset).filter(Dataset.course_id == course_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    _ensure_owns_course(dataset, user_id, roles)
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        if len(name) > 512:
+            raise HTTPException(status_code=400, detail="Name too long (max 512 chars)")
+        dataset.name = name
+
+    if body.description is not None:
+        # Empty string clears the description; trim whitespace so blank
+        # input doesn't sneak through as a single-space description.
+        cleaned = body.description.strip()
+        dataset.description = cleaned if cleaned else None
+
+    db.commit()
+
+    member_count = (
+        db.query(UserCourse).filter(UserCourse.dataset_id == dataset.id).count()
+    )
+    return CourseResponse(
+        course_id=dataset.course_id,
+        name=dataset.name,
+        description=dataset.description,
+        created_by=dataset.created_by,
+        member_count=member_count,
+    )
 
 
 # ---------------------------------------------------------------------------
