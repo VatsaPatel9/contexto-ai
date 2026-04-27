@@ -10,15 +10,20 @@ from sqlalchemy.orm import Session as DBSession
 from supertokens_python.asyncio import delete_user, get_user
 from supertokens_python.recipe.session import SessionContainer
 
+from sqlalchemy import and_, or_
+
 from backend.auth.dependencies import require_auth
+from backend.config import Settings
 from backend.database import get_db
+from backend.dependencies import get_settings
 from backend.models.conversation import Conversation
-from backend.models.dataset import Document
+from backend.models.dataset import Dataset, Document
 from backend.models.email_verification_attempt import EmailVerificationAttempt
 from backend.models.password_reset_attempt import PasswordResetAttempt
 from backend.models.user_course import UserCourse
 from backend.models.user_flags import UserFlag, UserFlagService
 from backend.models.user_profile import UserProfile, get_or_create_profile
+from backend.services.storage import get_presigned_download_url
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,96 @@ async def update_my_profile(
     db.commit()
 
     return {"result": "success", "display_name": profile.display_name}
+
+
+class AccessibleDocument(BaseModel):
+    id: str
+    title: str
+    status: str
+    chunk_count: int
+    course_id: str
+    course_name: str
+    uploader_role: str  # "baseline" | "course" | "private"
+    can_delete: bool
+    download_url: str | None = None
+
+
+class AccessibleDocumentListResponse(BaseModel):
+    data: list[AccessibleDocument]
+
+
+@router.get("/api/me/documents", response_model=AccessibleDocumentListResponse)
+async def list_my_accessible_documents(
+    session: SessionContainer = Depends(require_auth()),
+    db: DBSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Return every document the calling user has read access to.
+
+    Aggregates three buckets — baseline (system-wide), course (only
+    courses the caller is enrolled in), and private (only the caller's
+    own uploads). Soft-deleted rows are excluded. The frontend's
+    profile page uses this to show students all materials they can
+    consume in one place, instead of having to switch the active
+    course to find each one.
+
+    ``can_delete`` is true only for the caller's own private uploads
+    — they're the only thing a regular user is allowed to remove.
+    Baseline and course content is view-only at this surface.
+    """
+    user_id = session.get_user_id()
+
+    # Datasets the user is enrolled in. Used both to scope course-tagged
+    # docs and to label them with the right course name in the response.
+    enrolled_dataset_ids = [
+        row.dataset_id
+        for row in db.query(UserCourse.dataset_id)
+        .filter(UserCourse.user_id == user_id)
+        .all()
+    ]
+
+    rows = (
+        db.query(Document, Dataset)
+        .join(Dataset, Dataset.id == Document.dataset_id)
+        .filter(
+            Document.deleted_at.is_(None),
+            Document.status == "ready",
+            or_(
+                Document.uploader_role == "baseline",
+                and_(
+                    Document.uploader_role == "course",
+                    Document.dataset_id.in_(enrolled_dataset_ids)
+                    if enrolled_dataset_ids
+                    else False,
+                ),
+                and_(
+                    Document.uploader_role == "private",
+                    Document.uploaded_by == user_id,
+                ),
+            ),
+        )
+        .order_by(Dataset.name.asc(), Document.created_at.desc())
+        .all()
+    )
+
+    out: list[AccessibleDocument] = []
+    for doc, ds in rows:
+        out.append(
+            AccessibleDocument(
+                id=str(doc.id),
+                title=doc.title,
+                status=doc.status,
+                chunk_count=doc.chunk_count or 0,
+                course_id=ds.course_id,
+                course_name=ds.name,
+                uploader_role=doc.uploader_role or "private",
+                can_delete=(
+                    doc.uploader_role == "private" and doc.uploaded_by == user_id
+                ),
+                download_url=get_presigned_download_url(settings, doc.file_path),
+            )
+        )
+    return AccessibleDocumentListResponse(data=out)
 
 
 @router.delete("/api/me")

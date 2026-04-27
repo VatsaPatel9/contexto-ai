@@ -5,13 +5,32 @@
   import { authStore, getDisplayLabel, logout } from '$lib/stores/auth';
   import { session, conversations, conversationsLoaded } from '$lib/stores';
   import {
-    listDocuments,
     deleteDocument,
     getDocumentSignedUrl,
-    type UploadedDocument
   } from '$lib/apis/documents';
 
-  const API_BASE = import.meta.env.VITE_API_BASE_URL;
+  // Same fallback as $lib/auth/supertokens.ts: empty env → same-origin,
+  // which is what the nginx reverse proxy expects in production.
+  const API_BASE =
+    import.meta.env.VITE_API_BASE_URL ||
+    (typeof window !== 'undefined' ? window.location.origin : '');
+
+  // One row per accessible document, with the course it belongs to so
+  // we can group by course in the UI. Comes from /api/me/documents,
+  // which aggregates baseline + enrolled-course + own-private content
+  // — replacing the old single-course listDocuments() call that only
+  // showed materials from whichever course was last selected.
+  type AccessibleDocument = {
+    id: string;
+    title: string;
+    status: 'processing' | 'ready' | 'error';
+    chunk_count: number;
+    course_id: string;
+    course_name: string;
+    uploader_role: 'baseline' | 'course' | 'private';
+    can_delete: boolean;
+    download_url?: string | null;
+  };
 
   type MyProfile = {
     user_id: string;
@@ -24,7 +43,7 @@
 
   let profile = $state<MyProfile | null>(null);
   let loading = $state(true);
-  let documents = $state<UploadedDocument[]>([]);
+  let documents = $state<AccessibleDocument[]>([]);
   let docsLoading = $state(false);
 
   onMount(async () => {
@@ -34,30 +53,32 @@
     } catch { /* ignore */ }
     loading = false;
 
-    // Load documents if user has upload permission
     await loadDocuments();
   });
 
   async function loadDocuments() {
     docsLoading = true;
     try {
-      const courseId = session.getCourseId();
-      const res = await listDocuments(courseId);
-      documents = res.data;
+      const res = await fetch(`${API_BASE}/api/me/documents`, { credentials: 'include' });
+      if (res.ok) {
+        const body = await res.json();
+        documents = body.data ?? [];
+      } else {
+        documents = [];
+      }
     } catch {
-      // No docs or no permission
       documents = [];
     }
     docsLoading = false;
   }
 
-  async function handleDeleteDocument(docId: string, title: string) {
-    if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  async function handleDeleteDocument(doc: AccessibleDocument) {
+    if (!doc.can_delete) return;
+    if (!confirm(`Delete "${doc.title}"? This cannot be undone.`)) return;
     try {
-      const courseId = session.getCourseId();
-      await deleteDocument(courseId, docId);
-      documents = documents.filter((d) => d.id !== docId);
-      toast.success(`"${title}" deleted`);
+      await deleteDocument(doc.course_id, doc.id);
+      documents = documents.filter((d) => d.id !== doc.id);
+      toast.success(`"${doc.title}" deleted`);
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -132,9 +153,34 @@
     $authStore.roles.includes('super_admin')
   );
 
-  let activeDocuments = $derived(documents.filter((d) => !d.deleted_at));
+  // Backend already filters out soft-deleted; nothing extra to do.
+  let activeDocuments = $derived(documents);
   let docsExpanded = $state(false);
   let visibleDocuments = $derived(docsExpanded ? activeDocuments : activeDocuments.slice(0, 3));
+
+  // Group the visible slice by course so students can see each course's
+  // materials clustered together. Baseline-tagged docs are pulled into
+  // a separate group so they're easy to spot.
+  let groupedDocuments = $derived.by(() => {
+    const groups = new Map<string, AccessibleDocument[]>();
+    for (const doc of visibleDocuments) {
+      const label =
+        doc.uploader_role === 'baseline'
+          ? 'System library'
+          : doc.uploader_role === 'private'
+            ? 'My uploads'
+            : doc.course_name || 'Course';
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label)!.push(doc);
+    }
+    return Array.from(groups.entries());
+  });
+
+  function uploaderRoleLabel(role: AccessibleDocument['uploader_role']): string {
+    if (role === 'baseline') return '🌐 System';
+    if (role === 'course') return '🎓 Course';
+    return '🔒 Private';
+  }
 
   // ── Delete account ───────────────────────────────────────────────
   // Confirmation pattern: user must type their own email exactly to
@@ -254,7 +300,9 @@
           {/if}
         </div>
 
-        <!-- My Documents -->
+        <!-- My Documents — every doc the user can read, grouped by
+             course. Baseline + enrolled-course content is view-only;
+             only the user's own private uploads expose a Delete button. -->
         {#if canUpload || activeDocuments.length > 0}
           <div class="bg-gray-50 dark:bg-gray-800 rounded-2xl p-5">
             <h2 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
@@ -264,81 +312,84 @@
             {#if docsLoading}
               <p class="text-sm text-gray-400 py-4 text-center">Loading documents...</p>
             {:else if activeDocuments.length === 0}
-              <p class="text-sm text-gray-400 py-4 text-center">No documents uploaded yet</p>
+              <p class="text-sm text-gray-400 py-4 text-center">No documents available yet</p>
             {:else}
-              <div class="space-y-2">
-                {#each visibleDocuments as doc (doc.id)}
-                  <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white dark:bg-gray-850
-                              border border-gray-100 dark:border-gray-700 group">
-                    <span class="text-lg shrink-0">{getFileIcon(doc.title)}</span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{doc.title}</p>
-                      <div class="flex items-center gap-2 mt-0.5">
-                        <span class="px-1.5 py-0 rounded text-[9px] font-medium {getStatusBadge(doc.status)}">
-                          {doc.status}
-                        </span>
-                        <span class="text-[10px] text-gray-400">{doc.chunk_count} chunks</span>
-                        <span class="text-[10px] text-gray-400">
-                          {doc.visibility === 'private' ? '🔒 Private' : '🌐 Global'}
-                        </span>
-                      </div>
-                    </div>
-                    <div class="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
-                      <!-- View (open in a new tab) -->
-                      <button
-                        onclick={() => handleViewDocument(doc.id)}
-                        class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
-                               text-gray-400 hover:text-blue-600 transition"
-                        title="Open in a new tab"
-                        aria-label="View document"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                          <circle cx="12" cy="12" r="3" />
-                        </svg>
-                      </button>
+              <div class="space-y-4">
+                {#each groupedDocuments as [groupLabel, groupDocs] (groupLabel)}
+                  <div>
+                    <p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5 px-1">
+                      {groupLabel}
+                    </p>
+                    <div class="space-y-2">
+                      {#each groupDocs as doc (doc.id)}
+                        <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white dark:bg-gray-850
+                                    border border-gray-100 dark:border-gray-700 group">
+                          <span class="text-lg shrink-0">{getFileIcon(doc.title)}</span>
+                          <div class="flex-1 min-w-0">
+                            <p class="text-sm text-gray-800 dark:text-gray-200 truncate font-medium">{doc.title}</p>
+                            <div class="flex items-center gap-2 mt-0.5">
+                              <span class="px-1.5 py-0 rounded text-[9px] font-medium {getStatusBadge(doc.status)}">
+                                {doc.status}
+                              </span>
+                              <span class="text-[10px] text-gray-400">{doc.chunk_count} chunks</span>
+                              <span class="text-[10px] text-gray-400">{uploaderRoleLabel(doc.uploader_role)}</span>
+                            </div>
+                          </div>
+                          <div class="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
+                            <button
+                              onclick={() => handleViewDocument(doc.id)}
+                              class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
+                                     text-gray-400 hover:text-blue-600 transition"
+                              title="Open in a new tab"
+                              aria-label="View document"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                <circle cx="12" cy="12" r="3" />
+                              </svg>
+                            </button>
 
-                      <!-- Download -->
-                      <button
-                        onclick={() => handleDownloadDocument(doc.id, doc.title)}
-                        class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
-                               text-gray-400 hover:text-blue-600 transition"
-                        title="Download"
-                        aria-label="Download document"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                          <polyline points="7 10 12 15 17 10" />
-                          <line x1="12" y1="15" x2="12" y2="3" />
-                        </svg>
-                      </button>
+                            <button
+                              onclick={() => handleDownloadDocument(doc.id, doc.title)}
+                              class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800
+                                     text-gray-400 hover:text-blue-600 transition"
+                              title="Download"
+                              aria-label="Download document"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="7 10 12 15 17 10" />
+                                <line x1="12" y1="15" x2="12" y2="3" />
+                              </svg>
+                            </button>
 
-                      {#if doc.visibility === 'private' || $authStore.roles.includes('admin') || $authStore.roles.includes('super_admin')}
-                        <!-- Delete -->
-                        <button
-                          onclick={() => handleDeleteDocument(doc.id, doc.title)}
-                          class="p-1.5 rounded-lg
-                                 hover:bg-red-50 dark:hover:bg-red-900/20
-                                 text-gray-400 hover:text-red-500 transition"
-                          title="Delete document"
-                          aria-label="Delete document"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="3 6 5 6 21 6" />
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                          </svg>
-                        </button>
-                      {/if}
+                            {#if doc.can_delete}
+                              <button
+                                onclick={() => handleDeleteDocument(doc)}
+                                class="p-1.5 rounded-lg
+                                       hover:bg-red-50 dark:hover:bg-red-900/20
+                                       text-gray-400 hover:text-red-500 transition"
+                                title="Delete document"
+                                aria-label="Delete document"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                  <polyline points="3 6 5 6 21 6" />
+                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                </svg>
+                              </button>
+                            {/if}
+                          </div>
+                        </div>
+                      {/each}
                     </div>
                   </div>
                 {/each}
               </div>
 
-              <!-- Show more / Show less -->
               {#if activeDocuments.length > 3}
                 <button
                   onclick={() => docsExpanded = !docsExpanded}
-                  class="w-full mt-2 py-1.5 text-xs text-center text-blue-600 dark:text-blue-400
+                  class="w-full mt-3 py-1.5 text-xs text-center text-blue-600 dark:text-blue-400
                          hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition font-medium"
                 >
                   {docsExpanded ? 'Show less' : `Show all ${activeDocuments.length} documents`}
