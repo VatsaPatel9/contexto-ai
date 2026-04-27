@@ -19,5 +19,8 @@ RUN apk add --no-cache gettext
 COPY --from=build /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 
-# Railway injects $PORT; substitute it into the template at container start.
-CMD ["/bin/sh", "-c", "envsubst '$PORT' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+# Railway injects $PORT; the deploy also needs $BACKEND_URL (e.g.
+# http://backend.railway.internal:8000) so nginx can reverse-proxy
+# /api and /auth onto the backend service. Substituted at container
+# start so Railway env vars take effect without rebuilding.
+CMD ["/bin/sh", "-c", "envsubst '$PORT $BACKEND_URL' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
