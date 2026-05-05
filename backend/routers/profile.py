@@ -145,38 +145,64 @@ async def list_my_accessible_documents(
     """
     user_id = session.get_user_id()
 
-    # Datasets the user is enrolled in. Used both to scope course-tagged
-    # docs and to label them with the right course name in the response.
-    enrolled_dataset_ids = [
-        row.dataset_id
-        for row in db.query(UserCourse.dataset_id)
-        .filter(UserCourse.user_id == user_id)
-        .all()
-    ]
+    # super_admins see every doc on their profile too — same "god mode"
+    # the chat retriever applies, so the surfaces stay consistent.
+    from backend.auth.dependencies import get_user_roles as _get_roles
+    from backend.auth.roles import SUPER_ADMIN as _SA
+    caller_roles = await _get_roles(session)
+    is_super_admin = _SA in caller_roles
 
-    rows = (
+    base_q = (
         db.query(Document, Dataset)
         .join(Dataset, Dataset.id == Document.dataset_id)
         .filter(
             Document.deleted_at.is_(None),
             Document.status == "ready",
-            or_(
-                Document.uploader_role == "baseline",
-                and_(
-                    Document.uploader_role == "course",
-                    Document.dataset_id.in_(enrolled_dataset_ids)
-                    if enrolled_dataset_ids
-                    else False,
-                ),
-                and_(
-                    Document.uploader_role == "private",
-                    Document.uploaded_by == user_id,
-                ),
-            ),
         )
-        .order_by(Dataset.name.asc(), Document.created_at.desc())
-        .all()
     )
+
+    if is_super_admin:
+        rows = base_q.order_by(
+            Dataset.name.asc(), Document.created_at.desc()
+        ).all()
+    else:
+        # Datasets the caller can see course-tagged docs from: ones they're
+        # enrolled in (as a student) OR ones they created (as an admin).
+        # The "created" branch keeps an admin's own course materials on
+        # their profile without requiring them to self-enrol.
+        enrolled_dataset_ids = [
+            row.dataset_id
+            for row in db.query(UserCourse.dataset_id)
+            .filter(UserCourse.user_id == user_id)
+            .all()
+        ]
+        owned_dataset_ids = [
+            row.id
+            for row in db.query(Dataset.id)
+            .filter(Dataset.created_by == user_id)
+            .all()
+        ]
+        course_visible_ids = list({*enrolled_dataset_ids, *owned_dataset_ids})
+
+        rows = (
+            base_q.filter(
+                or_(
+                    Document.uploader_role == "baseline",
+                    and_(
+                        Document.uploader_role == "course",
+                        Document.dataset_id.in_(course_visible_ids)
+                        if course_visible_ids
+                        else False,
+                    ),
+                    and_(
+                        Document.uploader_role == "private",
+                        Document.uploaded_by == user_id,
+                    ),
+                ),
+            )
+            .order_by(Dataset.name.asc(), Document.created_at.desc())
+            .all()
+        )
 
     out: list[AccessibleDocument] = []
     for doc, ds in rows:

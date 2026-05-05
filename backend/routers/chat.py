@@ -72,6 +72,15 @@ async def chat_messages(
     """Accept a chat message and return an SSE streaming response."""
     user_id = session.get_user_id()
 
+    # super_admins bypass the visibility filter — they see every doc in
+    # chat (including private uploads from any user) for support / audit
+    # purposes. Computed once here rather than re-derived in the
+    # orchestrator so the role lookup hits SuperTokens once per request.
+    from backend.auth.dependencies import get_user_roles
+    from backend.auth.roles import SUPER_ADMIN
+    caller_roles = await get_user_roles(session)
+    is_super_admin = SUPER_ADMIN in caller_roles
+
     llm = get_llm_client(settings)
 
     retriever = None
@@ -97,6 +106,7 @@ async def chat_messages(
                 retriever=retriever,
                 llm=llm,
                 settings=settings,
+                is_super_admin=is_super_admin,
             ):
                 # Sniff the JSON payload (cheap — one parse per event) so
                 # the wrapper can do cache invalidation without coupling

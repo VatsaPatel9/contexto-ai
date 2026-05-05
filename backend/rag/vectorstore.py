@@ -46,6 +46,7 @@ class PgVectorStore:
         top_k: int = 5,
         score_threshold: float = 0.5,
         user_id: str | None = None,
+        is_super_admin: bool = False,
     ) -> list[dict[str, Any]]:
         """Cosine-similarity search against document segments.
 
@@ -58,10 +59,10 @@ class PgVectorStore:
 
         * ``baseline`` (super_admin uploads) — always included
         * ``course`` (admin uploads) — included for every dataset the
-          caller is enrolled in (row in ``user_courses``). The retriever
-          intentionally does NOT scope to a single "selected course":
-          a learner enrolled in multiple courses asks one question and
-          should get hits across all of them, plus baseline.
+          caller is enrolled in OR every dataset the caller *created*.
+          The owner clause exists so an admin chatting in their own
+          course sees the materials they uploaded — they typically
+          aren't enrolled as a student in their own course.
         * ``private`` (user uploads) — included only when uploaded by
           the requesting user, regardless of which dataset they live in.
 
@@ -69,52 +70,81 @@ class PgVectorStore:
         the signature for callers that haven't migrated yet. A real
         single-dataset scope can be reintroduced via a different param
         if we ever bring back per-course context.
+
+        ``is_super_admin=True`` bypasses the visibility filter entirely
+        — super_admins see every doc in the system from chat, including
+        private uploads from any user. This is intentional "god mode"
+        for support / audit; the role gate is enforced at the calling
+        endpoint, not here.
         """
         del dataset_id  # not used in the filter anymore; see docstring.
-        query_sql = sa_text("""
-            SELECT
-                ds.id,
-                ds.content,
-                ds.metadata,
-                ds.document_id,
-                ds.page_num,
-                ds.section,
-                1 - (ds.embedding <=> :query_embedding) AS score
-            FROM document_segments ds
-            JOIN documents d ON d.id = ds.document_id
-            WHERE ds.embedding IS NOT NULL
-              AND d.deleted_at IS NULL
-              AND 1 - (ds.embedding <=> :query_embedding) >= :score_threshold
-              AND (
-                  d.uploader_role = 'baseline'
-                  OR (
-                      d.uploader_role = 'course'
-                      AND ds.dataset_id IN (
-                          SELECT dataset_id FROM user_courses WHERE user_id = :user_id
+        if is_super_admin:
+            query_sql = sa_text("""
+                SELECT
+                    ds.id,
+                    ds.content,
+                    ds.metadata,
+                    ds.document_id,
+                    ds.page_num,
+                    ds.section,
+                    1 - (ds.embedding <=> :query_embedding) AS score
+                FROM document_segments ds
+                JOIN documents d ON d.id = ds.document_id
+                WHERE ds.embedding IS NOT NULL
+                  AND d.deleted_at IS NULL
+                  AND 1 - (ds.embedding <=> :query_embedding) >= :score_threshold
+                ORDER BY ds.embedding <=> :query_embedding
+                LIMIT :top_k
+            """)
+        else:
+            query_sql = sa_text("""
+                SELECT
+                    ds.id,
+                    ds.content,
+                    ds.metadata,
+                    ds.document_id,
+                    ds.page_num,
+                    ds.section,
+                    1 - (ds.embedding <=> :query_embedding) AS score
+                FROM document_segments ds
+                JOIN documents d ON d.id = ds.document_id
+                WHERE ds.embedding IS NOT NULL
+                  AND d.deleted_at IS NULL
+                  AND 1 - (ds.embedding <=> :query_embedding) >= :score_threshold
+                  AND (
+                      d.uploader_role = 'baseline'
+                      OR (
+                          d.uploader_role = 'course'
+                          AND (
+                              ds.dataset_id IN (
+                                  SELECT dataset_id FROM user_courses WHERE user_id = :user_id
+                              )
+                              OR ds.dataset_id IN (
+                                  SELECT id FROM datasets WHERE created_by = :user_id
+                              )
+                          )
+                      )
+                      OR (
+                          d.uploader_role = 'private'
+                          AND d.uploaded_by = :user_id
                       )
                   )
-                  OR (
-                      d.uploader_role = 'private'
-                      AND d.uploaded_by = :user_id
-                  )
-              )
-            ORDER BY ds.embedding <=> :query_embedding
-            LIMIT :top_k
-        """)
+                ORDER BY ds.embedding <=> :query_embedding
+                LIMIT :top_k
+            """)
 
         session: Session = self._session_factory()
         try:
             # pgvector expects the embedding as a string representation of a list
             embedding_str = str(query_embedding)
-            rows = session.execute(
-                query_sql,
-                {
-                    "query_embedding": embedding_str,
-                    "score_threshold": score_threshold,
-                    "top_k": top_k,
-                    "user_id": user_id or "",
-                },
-            ).fetchall()
+            params: dict[str, Any] = {
+                "query_embedding": embedding_str,
+                "score_threshold": score_threshold,
+                "top_k": top_k,
+            }
+            if not is_super_admin:
+                params["user_id"] = user_id or ""
+            rows = session.execute(query_sql, params).fetchall()
 
             results: list[dict[str, Any]] = []
             for row in rows:

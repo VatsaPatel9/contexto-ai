@@ -31,6 +31,7 @@ class Retriever:
         top_k: int = 5,
         score_threshold: float = 0.5,
         user_id: str | None = None,
+        is_super_admin: bool = False,
     ) -> list[SourceChunk]:
         """Retrieve the top-matching source chunks for *query*.
 
@@ -41,6 +42,9 @@ class Retriever:
 
         When *user_id* is provided, private documents are filtered so only
         the uploader's own documents are included in results.
+
+        ``is_super_admin=True`` bypasses the visibility filter — used for
+        support / audit chat where a super_admin needs to see every doc.
 
         Returns an ordered list (highest score first) of at most *top_k*
         :class:`SourceChunk` instances.
@@ -53,6 +57,7 @@ class Retriever:
             top_k=top_k,
             score_threshold=score_threshold,
             user_id=user_id,
+            is_super_admin=is_super_admin,
         )
 
         chunks: list[SourceChunk] = []

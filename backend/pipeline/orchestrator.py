@@ -136,7 +136,9 @@ def _chunks_used_in_response(
     return out
 
 
-def _list_available_docs(db: Session, user_id: str) -> list[dict]:
+def _list_available_docs(
+    db: Session, user_id: str, is_super_admin: bool = False
+) -> list[dict]:
     """One representative line per active doc the user can read.
 
     Used to populate "here's what I can help with" responses — both on
@@ -144,45 +146,60 @@ def _list_available_docs(db: Session, user_id: str) -> list[dict]:
     questions like "what topics can you help with?".
 
     Visibility mirrors the chat retriever: every baseline doc, every
-    course doc in a dataset the user is enrolled in, plus the user's
-    own private uploads. Soft-deleted and non-ready rows are excluded.
+    course doc in a dataset the user is enrolled in OR created, plus
+    the user's own private uploads. Soft-deleted and non-ready rows
+    are excluded. The "created" clause keeps an admin's own course
+    materials visible to their chat without requiring self-enrolment.
+
+    ``is_super_admin=True`` skips the visibility filter entirely so the
+    listing matches the retriever's super_admin view (every doc).
     """
-    from backend.models.dataset import Document, DocumentSegment
+    from backend.models.dataset import Dataset, Document, DocumentSegment
     from sqlalchemy import and_, or_
 
-    enrolled_dataset_ids = [
-        row.dataset_id
-        for row in db.query(UserCourse.dataset_id)
-        .filter(UserCourse.user_id == user_id)
-        .all()
-    ]
-
-    visibility_clauses = [
-        Document.uploader_role == "baseline",
-        and_(
-            Document.uploader_role == "private",
-            Document.uploaded_by == user_id,
-        ),
-    ]
-    if enrolled_dataset_ids:
-        visibility_clauses.append(
-            and_(
-                Document.uploader_role == "course",
-                Document.dataset_id.in_(enrolled_dataset_ids),
-            )
-        )
-
-    docs = (
-        db.query(Document)
-        .filter(
-            Document.deleted_at.is_(None),
-            Document.status == "ready",
-            or_(*visibility_clauses),
-        )
-        .order_by(Document.created_at.desc())
-        .limit(30)
-        .all()
+    base_q = db.query(Document).filter(
+        Document.deleted_at.is_(None),
+        Document.status == "ready",
     )
+
+    if is_super_admin:
+        docs = base_q.order_by(Document.created_at.desc()).limit(30).all()
+    else:
+        enrolled_dataset_ids = [
+            row.dataset_id
+            for row in db.query(UserCourse.dataset_id)
+            .filter(UserCourse.user_id == user_id)
+            .all()
+        ]
+        owned_dataset_ids = [
+            row.id
+            for row in db.query(Dataset.id)
+            .filter(Dataset.created_by == user_id)
+            .all()
+        ]
+        course_visible_ids = list({*enrolled_dataset_ids, *owned_dataset_ids})
+
+        visibility_clauses = [
+            Document.uploader_role == "baseline",
+            and_(
+                Document.uploader_role == "private",
+                Document.uploaded_by == user_id,
+            ),
+        ]
+        if course_visible_ids:
+            visibility_clauses.append(
+                and_(
+                    Document.uploader_role == "course",
+                    Document.dataset_id.in_(course_visible_ids),
+                )
+            )
+
+        docs = (
+            base_q.filter(or_(*visibility_clauses))
+            .order_by(Document.created_at.desc())
+            .limit(30)
+            .all()
+        )
 
     out: list[dict] = []
     for d in docs:
@@ -334,6 +351,7 @@ async def process_chat_message(
     retriever,  # Retriever instance (may be None)
     llm: LLMClient,
     settings: Settings,
+    is_super_admin: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Run the full tutoring pipeline and yield SSE-formatted chunks.
 
@@ -567,6 +585,7 @@ async def process_chat_message(
                 top_k=settings.rag_top_k,
                 score_threshold=settings.rag_score_threshold,
                 user_id=user_id,
+                is_super_admin=is_super_admin,
             )
             # Fallback pass: short / colloquial / misspelled queries
             # ("what is time complexity?") sometimes score just below the
@@ -580,6 +599,7 @@ async def process_chat_message(
                     top_k=settings.rag_top_k,
                     score_threshold=settings.rag_score_threshold_fallback,
                     user_id=user_id,
+                    is_super_admin=is_super_admin,
                 )
         except Exception as exc:
             logger.error("RAG retrieval failed: %s", exc)
@@ -655,7 +675,7 @@ async def process_chat_message(
 
     if msg_type != "meta" and not source_chunks:
         if has_course_content:
-            available_docs = _list_available_docs(db, user_id)
+            available_docs = _list_available_docs(db, user_id, is_super_admin=is_super_admin)
             if available_docs:
                 docs_block = "\n".join(
                     f"- **{d['title']}**" + (f" — {d['preview']}" if d['preview'] else "")
@@ -803,7 +823,7 @@ Do NOT give a flat paragraph explanation. Always use structured bullets + analog
     elif msg_type == "meta":
         docs_for_meta: list[dict] = []
         try:
-            docs_for_meta = _list_available_docs(db, user_id)
+            docs_for_meta = _list_available_docs(db, user_id, is_super_admin=is_super_admin)
         except Exception:
             docs_for_meta = []
 
