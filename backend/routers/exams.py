@@ -640,56 +640,68 @@ def _build_generate_prompt(
     chunks: list,
     course_name: str | None,
 ) -> list[dict]:
-    """Compose the system + user messages for question generation."""
+    """Compose the system + user messages for question generation.
+
+    Caller guarantees ``chunks`` is non-empty — the strict course-only
+    contract is enforced at :func:`_generate_candidates_for_course`,
+    which refuses (422) when retrieval returns nothing.
+    """
     system_lines = [
-        "You are an exam-question author. You produce assessment items "
-        "grounded in the supplied course materials.",
+        "You are an exam-question author. EVERY question you produce "
+        "MUST be answerable directly from the supplied course materials. "
+        "You do NOT use general knowledge, prior training, intuition, "
+        "or anything outside the chunks given to you.",
         "",
-        "Rules — apply all of them:",
-        "  * Base every question on the supplied source chunks. Do not "
-        "invent facts. If a topic isn't covered, write a question on a "
-        "topic that IS covered, rather than making something up.",
+        "Rules — apply ALL of them, strictly:",
+        "  * COURSE-ONLY: every question's correct answer must be "
+        "explicitly supported by content in the source chunks. If you "
+        "cannot ground a question in the chunks, OMIT it. Returning "
+        "fewer questions than asked is the correct behaviour — never "
+        "fill quota by inventing.",
+        "  * NO outside facts: do not introduce dates, names, formulas, "
+        "definitions, examples, or claims that aren't in the chunks. "
+        "If the chunk doesn't say it, you don't know it.",
+        "  * NO meta-questions about the materials themselves (\"who "
+        "wrote this?\", \"what page is X on?\"). Test the content, "
+        "not the artefact.",
         "  * Multiple-choice (mcq) questions MUST have exactly 4 options. "
         "At least one option must be correct; multiple correct options "
         "are allowed when justified by the material (the student gets "
         "partial credit for a partial selection).",
-        "  * True/False (true_false) questions MUST have exactly 2 options "
-        "with text 'True' and 'False' (in that order), and exactly one "
-        "correct.",
-        "  * The explanation explains WHY the correct answer is correct, "
-        "in 1-3 sentences, citing the source material implicitly.",
-        "  * Distractors (wrong options) should be plausible — don't write "
-        "obviously-bogus options.",
-        "  * Keep question stems and options self-contained. Don't write "
-        '"see the diagram above" or "as the previous question showed".',
+        "  * True/False (true_false) questions MUST have exactly 2 "
+        "options with text 'True' and 'False' (in that order), and "
+        "exactly one correct.",
+        "  * The explanation cites WHY the correct answer is correct, "
+        "in 1–3 sentences, paraphrasing the source material.",
+        "  * Distractors (wrong options) should be plausible and "
+        "course-relevant — drawn from related concepts in the chunks, "
+        "not obvious nonsense.",
+        "  * Keep question stems and options self-contained. Don't "
+        'write "see the diagram above" or "as the previous question '
+        'showed".',
     ]
     if course_name:
         system_lines.insert(1, f"This exam is for the course: {course_name}.")
 
     system_msg = "\n".join(system_lines)
 
-    if chunks:
-        chunk_lines = ["", "--- Course Materials (use as ground truth) ---"]
-        for i, c in enumerate(chunks, 1):
-            chunk_lines.append(
-                f"\n[Source {i}] {c.doc_title} "
-                f"(p.{c.page_num}{', ' + c.section if c.section else ''})\n"
-                f"{c.text}"
-            )
-        chunk_lines.append("\n--- End Course Materials ---")
-        system_msg += "\n".join(chunk_lines)
-    else:
-        system_msg += (
-            "\n\nNote: no relevant course material was retrieved for the "
-            "topic. Write questions based on widely-known facts about "
-            "the topic; do not fabricate course-specific content."
+    chunk_lines = ["", "--- Course Materials (the ONLY ground truth) ---"]
+    for i, c in enumerate(chunks, 1):
+        chunk_lines.append(
+            f"\n[Source {i}] {c.doc_title} "
+            f"(p.{c.page_num}{', ' + c.section if c.section else ''})\n"
+            f"{c.text}"
         )
+    chunk_lines.append("\n--- End Course Materials ---")
+    system_msg += "\n".join(chunk_lines)
 
     user_lines = [
         f"Generate exam questions on this topic: {topic.strip()}.",
-        f"Produce {n_mcq} multiple-choice (mcq) question(s) and "
-        f"{n_tf} true/false (true_false) question(s).",
-        "Return only the JSON object matching the schema — no prose.",
+        f"Target counts: {n_mcq} multiple-choice (mcq) + "
+        f"{n_tf} true/false (true_false).",
+        "If the materials don't support the requested count, return "
+        "fewer — never fabricate to hit the number. Return only the "
+        "JSON object matching the schema; no prose.",
     ]
 
     return [
@@ -719,7 +731,6 @@ async def _generate_candidates_for_course(
     from backend.dependencies import get_llm_client, get_retriever
 
     retriever = get_retriever()
-    retrieval_failed = False
     try:
         chunks = retriever.retrieve_for_course(
             query=topic,
@@ -730,7 +741,21 @@ async def _generate_candidates_for_course(
     except Exception as exc:
         logger.error("Retrieval failed during exam generation: %s", exc)
         chunks = []
-        retrieval_failed = True
+
+    # Strict course-only: refuse to generate when retrieval comes back
+    # empty. The chat tutor refuses for the same reason; the exam author
+    # must abide by the same contract — no questions on material the
+    # course doesn't cover. The admin sees a clear error so they can
+    # rephrase the topic or upload missing materials.
+    if not chunks:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No course materials match that topic. Try a topic "
+                "closer to wording in the uploaded documents, or upload "
+                "materials that cover it before generating."
+            ),
+        )
 
     messages = _build_generate_prompt(
         topic=topic,
@@ -786,7 +811,6 @@ async def _generate_candidates_for_course(
         "candidates": valid,
         "dropped": dropped,
         "chunks_used": len(chunks),
-        "retrieval_failed": retrieval_failed,
     }
 
 
@@ -891,11 +915,14 @@ _AGENT_TOOLS: list[dict] = [
         "function": {
             "name": "generate_exam_questions",
             "description": (
-                "Draft candidate exam questions for the current exam, "
-                "grounded on the course's documents. Call this when the "
-                "admin asks for new questions; the candidates appear in "
-                "a side panel where the admin reviews and selects which "
-                "ones to actually add to the exam — you do not add them."
+                "Draft candidate exam questions and put them in the "
+                "review panel. ALWAYS call this — never write questions "
+                "in chat. Triggered by ANY request that involves making, "
+                "drafting, generating, creating, writing, adding, "
+                "preparing, or producing questions / exam items / MCQs "
+                "/ T-or-Fs / quizzes / problems. The tool returns "
+                "structured candidates the admin reviews and edits in a "
+                "side panel; you do NOT add them to the exam yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -930,24 +957,38 @@ _AGENT_TOOLS: list[dict] = [
 
 def _agent_system_prompt(exam: Exam, course_name: str | None) -> str:
     return (
-        "You are an exam-authoring assistant embedded in the exam editor. "
-        f"The current exam is titled \"{exam.title}\" "
-        f"({'in course ' + course_name if course_name else ''}). "
-        "Your job is to help the admin draft new questions by calling "
-        "the `generate_exam_questions` tool. Rules:\n"
-        "  * Always call the tool when the admin asks for questions; "
-        "don't write the questions yourself in chat.\n"
-        "  * Pick reasonable counts when the admin doesn't specify "
-        "(default 3 MCQ + 2 T/F).\n"
-        "  * After the tool runs, write a one or two sentence summary "
-        "of what was drafted so the admin knows to look at the side "
-        "panel. Do NOT repeat the question text in chat — the panel "
-        "already shows it.\n"
-        "  * If the admin asks for something off-topic (about the exam "
-        "itself, the course, or unrelated chitchat), answer briefly in "
+        "You are a tool-calling exam-authoring agent embedded in the "
+        f"editor for the exam \"{exam.title}\""
+        f"{' in course ' + course_name if course_name else ''}. "
+        "You are NOT a tutor and NOT a chatbot. You are an action "
+        "agent whose primary behaviour is to call tools.\n"
+        "\n"
+        "RULES — apply strictly:\n"
+        "  1. The ONLY way you produce questions is by calling "
+        "`generate_exam_questions`. Never write question stems, "
+        "options, or T/F items in chat — even if the admin says "
+        "'just brainstorm' or 'show me ideas'. The brainstorm IS "
+        "the tool call; the tool returns candidates the admin "
+        "reviews and edits.\n"
+        "  2. Call the tool for ANY request that asks to make, draft, "
+        "generate, create, write, add, prepare, brainstorm, or come "
+        "up with questions / quizzes / MCQs / T-or-Fs / problems / "
+        "items / exam content. If unsure whether to call the tool, "
+        "call it.\n"
+        "  3. Pick reasonable counts when the admin doesn't specify: "
+        "default n_mcq=3, n_tf=2. The topic argument is the admin's "
+        "wording, lightly cleaned.\n"
+        "  4. After the tool runs, write ONE short sentence telling "
+        "the admin to look at the side panel. Do NOT repeat any "
+        "question text — the panel already shows it.\n"
+        "  5. ONLY for genuine meta questions about the exam itself "
+        "(\"what's the deadline?\", \"how many questions does this "
+        "exam have?\", \"is it published?\") or for clarifying "
+        "questions to disambiguate the topic, answer briefly in "
         "plain text without calling the tool.\n"
-        "  * The admin selects + edits in the panel themselves; you do "
-        "not add questions to the exam."
+        "  6. NEVER claim you 'can't create exam questions' or 'can "
+        "only brainstorm'. You CAN — by calling the tool. If you find "
+        "yourself about to write that, call the tool instead."
     )
 
 

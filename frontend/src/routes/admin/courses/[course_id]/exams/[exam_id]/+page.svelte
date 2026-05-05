@@ -259,6 +259,13 @@
   let aiDropped = $state(0);
   let aiChunksUsed = $state<number | null>(null);
 
+  // Input mode toggle inside the panel: "chat" lets the admin type
+  // natural-language requests (agent endpoint with tool calls); "form"
+  // is the original structured input. Both produce candidates into the
+  // same list below — only the input UI swaps.
+  type AIInputMode = 'chat' | 'form';
+  let aiMode = $state<AIInputMode>('chat');
+
   function resetAiPanel() {
     aiCandidates = [];
     aiSelected = new Set();
@@ -842,90 +849,110 @@
         </button>
       </div>
 
-      <!-- Chat with AI (agent) -->
-      <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 space-y-3">
-        <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
-          Chat with the assistant
+      <!-- Mode tabs: chat (agent) vs structured form -->
+      <div class="px-5 pt-3 border-b border-gray-100 dark:border-gray-800">
+        <div class="flex items-center gap-1 -mb-px">
+          <button onclick={() => aiMode = 'chat'}
+                  class="px-3 py-2 text-xs font-medium transition border-b-2
+                         {aiMode === 'chat'
+                           ? 'border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400'
+                           : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}">
+            Chat
+          </button>
+          <button onclick={() => aiMode = 'form'}
+                  class="px-3 py-2 text-xs font-medium transition border-b-2
+                         {aiMode === 'form'
+                           ? 'border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400'
+                           : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}">
+            Quick form
+          </button>
         </div>
+      </div>
 
-        {#if agentTextHistory.length}
-          <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
-            {#each agentTextHistory as m, i (i)}
-              <div class="text-xs px-3 py-2 rounded-lg
-                          {m.role === 'user'
-                            ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100'
-                            : 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200'}">
-                <span class="text-[10px] uppercase tracking-wider opacity-60 block mb-0.5">
-                  {m.role === 'user' ? 'You' : 'Assistant'}
-                </span>
-                <p class="whitespace-pre-line">{m.content}</p>
-              </div>
-            {/each}
+      {#if aiMode === 'chat'}
+        <!-- Chat with AI (agent) -->
+        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 space-y-3">
+          {#if agentTextHistory.length}
+            <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {#each agentTextHistory as m, i (i)}
+                <div class="text-xs px-3 py-2 rounded-lg
+                            {m.role === 'user'
+                              ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-900 dark:text-purple-100'
+                              : 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200'}">
+                  <span class="text-[10px] uppercase tracking-wider opacity-60 block mb-0.5">
+                    {m.role === 'user' ? 'You' : 'Assistant'}
+                  </span>
+                  <p class="whitespace-pre-line">{m.content}</p>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-[11px] text-gray-400">
+              Describe what questions you want — e.g. "Make 5 MCQs and 2 T/Fs about photosynthesis."
+              The assistant drafts candidates that appear below for you to review and edit.
+            </p>
+          {/if}
+
+          <div class="flex items-end gap-2">
+            <textarea bind:value={agentInput}
+                      onkeydown={handleAgentKeydown}
+                      rows="2"
+                      disabled={agentSending}
+                      placeholder='e.g. "Make me 5 MCQs and 2 T/Fs about photosynthesis"'
+                      class="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                             bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                             focus:ring-1 focus:ring-purple-500 transition resize-y disabled:opacity-50"></textarea>
+            <button onclick={handleAgentSend} disabled={agentSending || !agentInput.trim()}
+                    class="px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition
+                           font-medium disabled:opacity-50 self-end">
+              {agentSending ? '…' : 'Send'}
+            </button>
           </div>
-        {/if}
-
-        <div class="flex items-end gap-2">
-          <textarea bind:value={agentInput}
-                    onkeydown={handleAgentKeydown}
-                    rows="2"
-                    disabled={agentSending}
-                    placeholder='e.g. "Make me 5 MCQs and 2 T/Fs about photosynthesis"'
-                    class="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                           bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                           focus:ring-1 focus:ring-purple-500 transition resize-y disabled:opacity-50"></textarea>
-          <button onclick={handleAgentSend} disabled={agentSending || !agentInput.trim()}
-                  class="px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition
-                         font-medium disabled:opacity-50 self-end">
-            {agentSending ? '…' : 'Send'}
-          </button>
-        </div>
-        <p class="text-[10px] text-gray-400">
-          Enter to send, Shift+Enter for a newline. Candidates appear below.
-        </p>
-      </div>
-
-      <!-- Generation form -->
-      <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 space-y-3">
-        <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
-          Quick form
-        </div>
-        <label class="block">
-          <span class="text-[11px] text-gray-400 block mb-1">Topic / instruction</span>
-          <textarea bind:value={aiTopic}
-                    rows="2"
-                    placeholder="e.g. Photosynthesis — focus on the light-dependent reactions"
-                    class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                           bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                           focus:ring-1 focus:ring-purple-500 transition resize-y"></textarea>
-        </label>
-        <div class="grid grid-cols-3 gap-2">
-          <label>
-            <span class="text-[11px] text-gray-400 block mb-1">MCQ count</span>
-            <input type="text" bind:value={aiNMcq}
-                   class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                          bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                          focus:ring-1 focus:ring-purple-500 transition" />
-          </label>
-          <label>
-            <span class="text-[11px] text-gray-400 block mb-1">T/F count</span>
-            <input type="text" bind:value={aiNTf}
-                   class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                          bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                          focus:ring-1 focus:ring-purple-500 transition" />
-          </label>
-          <button onclick={handleAiGenerate} disabled={aiGenerating}
-                  class="self-end px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700
-                         transition font-medium disabled:opacity-50">
-            {aiGenerating ? 'Generating…' : 'Generate'}
-          </button>
-        </div>
-        {#if aiChunksUsed !== null}
-          <p class="text-[11px] text-gray-500 dark:text-gray-400">
-            Grounded on {aiChunksUsed} retrieved chunk{aiChunksUsed === 1 ? '' : 's'}.
-            {aiDropped > 0 ? `${aiDropped} dropped (off-spec).` : ''}
+          <p class="text-[10px] text-gray-400">
+            Enter to send, Shift+Enter for a newline. Candidates appear below.
           </p>
-        {/if}
-      </div>
+        </div>
+      {:else}
+        <!-- Generation form -->
+        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 space-y-3">
+          <label class="block">
+            <span class="text-[11px] text-gray-400 block mb-1">Topic / instruction</span>
+            <textarea bind:value={aiTopic}
+                      rows="2"
+                      placeholder="e.g. Photosynthesis — focus on the light-dependent reactions"
+                      class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                             bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                             focus:ring-1 focus:ring-purple-500 transition resize-y"></textarea>
+          </label>
+          <div class="grid grid-cols-3 gap-2">
+            <label>
+              <span class="text-[11px] text-gray-400 block mb-1">MCQ count</span>
+              <input type="text" bind:value={aiNMcq}
+                     class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                            focus:ring-1 focus:ring-purple-500 transition" />
+            </label>
+            <label>
+              <span class="text-[11px] text-gray-400 block mb-1">T/F count</span>
+              <input type="text" bind:value={aiNTf}
+                     class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                            bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                            focus:ring-1 focus:ring-purple-500 transition" />
+            </label>
+            <button onclick={handleAiGenerate} disabled={aiGenerating}
+                    class="self-end px-3 py-2 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700
+                           transition font-medium disabled:opacity-50">
+              {aiGenerating ? 'Generating…' : 'Generate'}
+            </button>
+          </div>
+          {#if aiChunksUsed !== null}
+            <p class="text-[11px] text-gray-500 dark:text-gray-400">
+              Grounded on {aiChunksUsed} retrieved chunk{aiChunksUsed === 1 ? '' : 's'}.
+              {aiDropped > 0 ? `${aiDropped} dropped (off-spec).` : ''}
+            </p>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Candidates list -->
       <div class="flex-1 overflow-y-auto">
