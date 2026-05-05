@@ -169,6 +169,24 @@ export async function adminVerifyEmail(userId: string) {
   return res.json();
 }
 
+// ── Soft delete (super_admin only) ────────────────────────────────────
+
+export type SoftDeleteUserResult = {
+  result: 'success';
+  user_id: string;
+  original_email: string;
+  new_email: string;
+  deleted_at: number;
+  performed_by: string;
+};
+
+export async function deleteUser(userId: string): Promise<SoftDeleteUserResult> {
+  const res = await adminFetch(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
 // ── Courses ────────────────────────────────────────────────────────────
 
 export async function listCourses(): Promise<Course[]> {

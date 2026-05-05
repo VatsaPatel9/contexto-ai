@@ -24,6 +24,7 @@
     createCourse,
     deleteCourse,
     adminVerifyEmail,
+    deleteUser,
     type UserProfile,
     type Violation,
     type Course,
@@ -366,6 +367,22 @@
     showConfirm = true;
   }
 
+  async function handleDeleteUser(userId: string) {
+    const label = userLabel(userId);
+    confirmMessage =
+      `Delete ${label}? Their email will be released so they can sign up fresh, ` +
+      `and their data will be retained for 30 days before automatic purge. This cannot be undone from the UI.`;
+    confirmAction = async () => {
+      try {
+        const res = await deleteUser(userId);
+        toast.success(`Deleted — ${res.original_email} freed for re-signup`);
+        if (selectedProfile?.user_id === userId) selectedProfile = null;
+        await loadData();
+      } catch (e: any) { toast.error(e.message); }
+    };
+    showConfirm = true;
+  }
+
   async function handleMarkEmailVerified(userId: string) {
     confirmMessage = `Mark ${userLabel(userId)}'s email as verified? They'll be able to sign in immediately.`;
     confirmAction = async () => {
@@ -624,6 +641,15 @@
                               class="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200
                                      dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600 transition font-medium">
                         Demote
+                      </button>
+                    {/if}
+                    {#if !selectedProfile.roles.includes('super_admin')
+                          && selectedProfile.user_id !== $authStore.userId
+                          && !(selectedProfile.email ?? '').startsWith('delete-')}
+                      <button onclick={() => handleDeleteUser(selectedProfile!.user_id)}
+                              class="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700
+                                     transition font-medium">
+                        Delete
                       </button>
                     {/if}
                   {/if}

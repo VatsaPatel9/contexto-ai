@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +19,14 @@ from supertokens_python.recipe.userroles.asyncio import (
 from supertokens_python.recipe.userroles.interfaces import (
     UnknownRoleError,
 )
+
+logger = logging.getLogger(__name__)
+
+# Prefix used to mark a user as soft-deleted by rewriting their SuperTokens
+# email to "delete-<unix_ts>-<original_email>". The original email becomes
+# free for fresh sign-up, while the renamed account (and all its rows) is
+# retained for the 30-day grace window before a janitor purges it.
+DELETED_EMAIL_PREFIX = "delete-"
 
 from backend.auth.dependencies import require_role
 from backend.auth.roles import ADMIN, ALL_ROLES, SUPER_ADMIN, USER_UPLOADER
@@ -550,4 +560,118 @@ async def admin_verify_email(
         "user_id": user_id,
         "already_verified": False,
         "performed_by": session.get_user_id(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SOFT DELETE (super_admin only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.delete("/users/{user_id}")
+async def soft_delete_user(
+    user_id: str,
+    session: SessionContainer = Depends(require_role(SUPER_ADMIN)),
+):
+    """Soft-delete a user by renaming their email and revoking sessions.
+
+    The SuperTokens email is rewritten to ``delete-<unix_ts>-<original>``
+    so the original address is immediately free for a fresh sign-up,
+    while the renamed account and every row keyed off ``user_id``
+    (profile, conversations, documents, enrollments, flags) is retained
+    for a 30-day grace window. A separate janitor purges those rows
+    once the prefix timestamp is older than 30 days.
+
+    Restricted to super_admin. Guards:
+      * cannot delete yourself (use ``DELETE /api/me`` instead).
+      * cannot delete another super_admin (mutual-protection).
+      * cannot delete an already-soft-deleted user (idempotent reject).
+    """
+    from supertokens_python.asyncio import get_user
+    from supertokens_python.recipe.emailpassword.asyncio import (
+        update_email_or_password,
+    )
+    from supertokens_python.recipe.emailpassword.interfaces import (
+        EmailAlreadyExistsError,
+        UnknownUserIdError,
+        UpdateEmailOrPasswordEmailChangeNotAllowedError,
+    )
+    from supertokens_python.recipe.session.asyncio import (
+        revoke_all_sessions_for_user,
+    )
+
+    caller_id = session.get_user_id()
+    if user_id == caller_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Use the profile page to delete your own account.",
+        )
+
+    target_roles_result = await get_roles_for_user("public", user_id)
+    if SUPER_ADMIN in target_roles_result.roles:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot delete another super_admin.",
+        )
+
+    user = await get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target_email: str | None = None
+    target_recipe_user_id = None
+    for lm in user.login_methods:
+        if lm.recipe_id == "emailpassword" and lm.email:
+            target_email = lm.email
+            target_recipe_user_id = lm.recipe_user_id
+            break
+    if target_email is None or target_recipe_user_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="User has no email login method to rename.",
+        )
+
+    if target_email.startswith(DELETED_EMAIL_PREFIX):
+        raise HTTPException(
+            status_code=409,
+            detail="User is already soft-deleted.",
+        )
+
+    deleted_at = int(time.time())
+    new_email = f"{DELETED_EMAIL_PREFIX}{deleted_at}-{target_email}"
+
+    update_result = await update_email_or_password(
+        target_recipe_user_id, email=new_email
+    )
+    if isinstance(update_result, EmailAlreadyExistsError):
+        # The freed-up slot we're trying to write into is taken — extremely
+        # unlikely (timestamp collision on the same original email) but
+        # surface it instead of silently swallowing.
+        raise HTTPException(
+            status_code=409,
+            detail="Renamed email collision — try again.",
+        )
+    if isinstance(update_result, UnknownUserIdError):
+        raise HTTPException(status_code=404, detail="User not found")
+    if isinstance(update_result, UpdateEmailOrPasswordEmailChangeNotAllowedError):
+        raise HTTPException(
+            status_code=400,
+            detail=getattr(update_result, "reason", "Email change not allowed"),
+        )
+
+    try:
+        await revoke_all_sessions_for_user(user_id)
+    except Exception as exc:
+        # Email is already renamed at this point, so the user can no longer
+        # authenticate even if a session sticks around briefly. Log and move on.
+        logger.warning(
+            "Session revoke failed for soft-deleted user %s: %s", user_id, exc
+        )
+
+    return {
+        "result": "success",
+        "user_id": user_id,
+        "original_email": target_email,
+        "new_email": new_email,
+        "deleted_at": deleted_at,
+        "performed_by": caller_id,
     }
