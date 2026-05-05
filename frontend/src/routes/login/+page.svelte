@@ -80,16 +80,17 @@
       }
 
       // If the email is verified, land in the app. If not, the backend
-      // will 403 every request — route to /auth/verify-email instead
+      // will 403 every request — route to /auth/check-email instead
       // so the user sees a real "check your inbox" page, not a broken
-      // chat UI.
+      // chat UI. /auth/verify-email is reserved for the link-click
+      // landing page that consumes the token.
       const verified = await isEmailVerified();
       if (verified) {
         goto('/');
       } else {
-        // ?sent=1 tells the verify-email page "email already went out,
-        // show the inbox-check state and rate-limit the Resend button".
-        goto('/auth/verify-email?sent=1');
+        // ?sent=1 tells the check-email page "email already went out,
+        // start the Resend cooldown".
+        goto('/auth/check-email?sent=1');
       }
     } catch (e: any) {
       error = e.message || 'Authentication failed';
