@@ -27,6 +27,7 @@
   // admin nav (Users / Courses / Violations) instead of the chat list, so
   // there's one sidebar — never two stacked panels.
   let isAdminRoute = $derived($page.url.pathname.startsWith('/admin'));
+  let isExamsRoute = $derived($page.url.pathname.startsWith('/exams'));
   let isSuperAdmin = $derived($authStore.roles.includes('super_admin'));
   // The course detail route (/admin/courses/:id) is conceptually still
   // the Courses tab, so highlight it when on any /admin/courses/* path.
@@ -248,6 +249,26 @@
         {/if}
       </nav>
     {:else}
+      <!-- Top-level student links (above the chat list) -->
+      <div class="p-2 pb-0">
+        <button
+          onclick={() => { goto('/exams'); if ($mobile) showSidebar.set(false); }}
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {isExamsRoute
+                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                   : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900'}"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="9" y1="13" x2="15" y2="13" />
+            <line x1="9" y1="17" x2="15" y2="17" />
+          </svg>
+          Exams
+        </button>
+        <div class="h-px bg-gray-100 dark:bg-gray-850 my-2 mx-1"></div>
+      </div>
+
       <!-- Chat list -->
       <div class="flex-1 overflow-y-auto p-2 space-y-3">
         {#if $conversations.length === 0}

@@ -21,15 +21,42 @@
     type Course,
     type CourseMember,
   } from '$lib/apis/admin';
+  import {
+    listExams,
+    createExam,
+    deleteExam,
+    formatLocalDeadline,
+    localInputToUtcIso,
+    type ExamSummary,
+  } from '$lib/apis/exams';
   import DocumentManager from '$lib/components/admin/DocumentManager.svelte';
 
   // Route param
   let courseId = $derived(($page.params as Record<string, string>).course_id);
 
+  // Active tab driven by URL ?tab= so deep links work.
+  type Tab = 'members' | 'exams';
+  let activeTab = $derived((($page.url.searchParams.get('tab') as Tab) || 'members'));
+  function setTab(t: Tab) {
+    const params = new URLSearchParams($page.url.searchParams);
+    params.set('tab', t);
+    goto(`/admin/courses/${encodeURIComponent(courseId)}?${params.toString()}`);
+  }
+
   // Data
   let course = $state<Course | null>(null);
   let members = $state<CourseMember[]>([]);
   let loading = $state(true);
+
+  // Exams (lazy-loaded when the Exams tab opens for the first time)
+  let exams = $state<ExamSummary[]>([]);
+  let examsLoaded = $state(false);
+  let creatingExam = $state(false);
+
+  // Create-exam form
+  let newExamTitle = $state('');
+  let newExamDeadline = $state('');         // datetime-local string in viewer TZ
+  let newExamTimeLimit = $state<string>('60'); // minutes; '' means untimed
 
   // Add-member state
   let memberQuery = $state('');
@@ -224,6 +251,101 @@
     };
     showConfirm = true;
   }
+
+  // ── Exams ──────────────────────────────────────────────────────────
+
+  async function loadExams() {
+    try {
+      exams = await listExams(courseId);
+      examsLoaded = true;
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load exams');
+    }
+  }
+
+  async function handleCreateExam() {
+    if (!course) return;
+    const title = newExamTitle.trim();
+    if (!title) { toast.error('Exam title is required'); return; }
+    if (!newExamDeadline) { toast.error('Pick a deadline'); return; }
+
+    const deadline_at = localInputToUtcIso(newExamDeadline);
+    if (new Date(deadline_at).getTime() <= Date.now()) {
+      toast.error('Deadline must be in the future'); return;
+    }
+
+    const tlRaw = newExamTimeLimit.trim().toLowerCase();
+    let time_limit_minutes: number | null = null;
+    if (tlRaw === '' || tlRaw === 'none' || tlRaw === 'untimed') {
+      time_limit_minutes = null;
+    } else {
+      const n = parseInt(tlRaw, 10);
+      if (!Number.isFinite(n) || n < 1 || n > 24 * 60) {
+        toast.error('Time limit must be 1–1440 minutes (or blank for untimed)'); return;
+      }
+      time_limit_minutes = n;
+    }
+
+    creatingExam = true;
+    try {
+      const created = await createExam(course.course_id, {
+        title,
+        deadline_at,
+        time_limit_minutes,
+      });
+      toast.success(`"${created.title}" created — add questions next`);
+      newExamTitle = '';
+      newExamDeadline = '';
+      newExamTimeLimit = '60';
+      goto(`/admin/courses/${encodeURIComponent(course.course_id)}/exams/${created.id}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      creatingExam = false;
+    }
+  }
+
+  function openExam(examId: string) {
+    goto(`/admin/courses/${encodeURIComponent(courseId)}/exams/${examId}`);
+  }
+
+  function handleDeleteExam(exam: ExamSummary) {
+    confirmMessage = `Delete exam "${exam.title}"? Submissions are kept; the exam disappears from listings.`;
+    confirmAction = async () => {
+      try {
+        await deleteExam(exam.id);
+        toast.success('Exam deleted');
+        await loadExams();
+      } catch (e: any) {
+        toast.error(e.message);
+      }
+    };
+    showConfirm = true;
+  }
+
+  function examStateBadge(state: string): string {
+    switch (state) {
+      case 'draft':     return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+      case 'published': return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
+      case 'closed':    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+      case 'archived':  return 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500';
+      default:          return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+    }
+  }
+
+  // Derived state badge with deadline-aware "closed" override.
+  function effectiveState(exam: ExamSummary): string {
+    if (exam.state === 'published' && new Date(exam.deadline_at).getTime() < Date.now()) {
+      return 'closed';
+    }
+    return exam.state;
+  }
+
+  $effect(() => {
+    if (activeTab === 'exams' && course && !examsLoaded) {
+      loadExams();
+    }
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -355,6 +477,25 @@
         />
       {/if}
 
+      <!-- Tabs: Members | Exams -->
+      <div class="flex items-center gap-1 border-b border-gray-200 dark:border-gray-700">
+        <button onclick={() => setTab('members')}
+                class="px-4 py-2 text-sm font-medium transition border-b-2 -mb-px
+                       {activeTab === 'members'
+                         ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                         : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}">
+          Members · {members.length}
+        </button>
+        <button onclick={() => setTab('exams')}
+                class="px-4 py-2 text-sm font-medium transition border-b-2 -mb-px
+                       {activeTab === 'exams'
+                         ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                         : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}">
+          Exams{examsLoaded ? ` · ${exams.length}` : ''}
+        </button>
+      </div>
+
+      {#if activeTab === 'members'}
       <!-- Add member -->
       <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">
         <div class="flex items-center justify-between mb-3">
@@ -485,6 +626,101 @@
           </div>
         {/if}
       </div>
+
+      {:else if activeTab === 'exams'}
+
+      <!-- Create exam -->
+      {#if canEditCourse}
+        <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 p-5">
+          <div class="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-3">New exam</div>
+          <input type="text" bind:value={newExamTitle}
+                 placeholder="Exam title (e.g. Chapter 3 quiz)"
+                 class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                        bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                        focus:ring-1 focus:ring-blue-500 transition" />
+          <div class="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 mt-2">
+            <label class="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700
+                          bg-white dark:bg-gray-850 focus-within:ring-1 focus-within:ring-blue-500 transition">
+              <span class="text-[11px] text-gray-400 shrink-0">Deadline</span>
+              <input type="datetime-local" bind:value={newExamDeadline}
+                     class="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white" />
+            </label>
+            <label class="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700
+                          bg-white dark:bg-gray-850 focus-within:ring-1 focus-within:ring-blue-500 transition w-full sm:w-44">
+              <span class="text-[11px] text-gray-400 shrink-0">Time limit</span>
+              <input type="text" bind:value={newExamTimeLimit}
+                     placeholder="60 or blank"
+                     class="flex-1 text-sm bg-transparent outline-none text-gray-900 dark:text-white" />
+              <span class="text-[10px] text-gray-400">min</span>
+            </label>
+            <button onclick={handleCreateExam} disabled={creatingExam}
+                    class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition
+                           font-medium disabled:opacity-50 whitespace-nowrap">
+              {creatingExam ? 'Creating…' : 'Create draft'}
+            </button>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-2">
+            Deadline is interpreted in your local time and stored UTC. Leave time limit blank for an untimed exam.
+          </p>
+        </div>
+      {/if}
+
+      <!-- Exam list -->
+      <div>
+        {#if !examsLoaded}
+          <div class="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 px-4 py-10 text-center text-gray-400 text-sm">
+            Loading exams…
+          </div>
+        {:else if exams.length === 0}
+          <div class="rounded-2xl border border-dashed border-gray-200 dark:border-gray-700 px-4 py-10 text-center text-gray-400 text-sm">
+            No exams yet — create one above.
+          </div>
+        {:else}
+          <div class="space-y-2">
+            {#each exams as ex (ex.id)}
+              {@const eff = effectiveState(ex)}
+              <button onclick={() => openExam(ex.id)}
+                      class="w-full text-left rounded-2xl border border-gray-100 dark:border-gray-800
+                             bg-white dark:bg-gray-850 p-4 transition
+                             hover:border-gray-200 dark:hover:border-gray-700 hover:shadow-sm">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h3 class="text-sm font-semibold text-gray-900 dark:text-white truncate">{ex.title}</h3>
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-medium {examStateBadge(eff)}">
+                        {eff}
+                      </span>
+                    </div>
+                    {#if ex.description}
+                      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{ex.description}</p>
+                    {/if}
+                    <div class="flex items-center gap-3 mt-2 text-[11px] text-gray-500 dark:text-gray-400 flex-wrap">
+                      <span>Deadline: {formatLocalDeadline(ex.deadline_at)}</span>
+                      <span>·</span>
+                      <span>{ex.time_limit_minutes ? `${ex.time_limit_minutes} min` : 'Untimed'}</span>
+                      <span>·</span>
+                      <span>{ex.question_count} question{ex.question_count === 1 ? '' : 's'}</span>
+                    </div>
+                  </div>
+                  <div onclick={(e) => { e.stopPropagation(); handleDeleteExam(ex); }}
+                       role="button" tabindex="0"
+                       onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleDeleteExam(ex); } }}
+                       class="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50
+                              dark:hover:bg-red-900/20 transition cursor-pointer"
+                       title="Delete exam">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </div>
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      {/if}
     </div>
   </div>
 </div>

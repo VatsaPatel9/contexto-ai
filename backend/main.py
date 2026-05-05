@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
     from backend.routers.chat import router as chat_router
     from backend.routers.courses import router as courses_router
     from backend.routers.documents import router as documents_router
+    from backend.routers.exams import router as exams_router, student_router as exams_student_router
     from backend.routers.parameters import router as parameters_router
     from backend.routers.profile import router as profile_router
 
@@ -128,6 +129,8 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(courses_router)
     app.include_router(documents_router)
+    app.include_router(exams_router)
+    app.include_router(exams_student_router)
     app.include_router(parameters_router)
     app.include_router(profile_router)
 

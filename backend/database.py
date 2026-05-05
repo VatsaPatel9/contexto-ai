@@ -24,10 +24,18 @@ def get_db():
 
 
 def init_db() -> None:
-    """Create only our 8 tables. Fast — no introspection of existing tables."""
+    """Create our tables. Fast — no introspection of existing tables."""
     from backend.models.conversation import Conversation, Message  # noqa: F401
     from backend.models.dataset import Dataset, Document, DocumentSegment  # noqa: F401
     from backend.models.email_verification_attempt import EmailVerificationAttempt  # noqa: F401
+    from backend.models.exam import (  # noqa: F401
+        Exam,
+        ExamAttempt,
+        ExamAttemptGrant,
+        ExamQuestion,
+        ExamQuestionOption,
+        ExamResponse,
+    )
     from backend.models.password_reset_attempt import PasswordResetAttempt  # noqa: F401
     from backend.models.user_course import UserCourse  # noqa: F401
     from backend.models.user_flags import UserFlag  # noqa: F401
@@ -39,6 +47,23 @@ def init_db() -> None:
 
     # Only create tables defined on OUR Base — ignores anything else in the DB
     Base.metadata.create_all(bind=engine, checkfirst=True)
+
+    # Partial unique index: at most one active (un-submitted) attempt per
+    # (exam, user). Submitted attempts can stack up freely (Phase-4 retake
+    # grants insert another row after the previous one is closed). The
+    # ``CREATE INDEX IF NOT EXISTS`` keeps this idempotent across restarts.
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                  uq_exam_attempts_active_per_user
+                ON exam_attempts (exam_id, user_id)
+                WHERE submitted_at IS NULL
+                """
+            )
+        )
+        conn.commit()
 
     # Ensure new columns exist on pre-existing tables (lightweight migration)
     _add_column_if_missing(engine, "user_profiles", "display_name", "VARCHAR(255)")

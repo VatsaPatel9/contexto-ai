@@ -132,6 +132,81 @@ class PgVectorStore:
         finally:
             session.close()
 
+    def search_for_course(
+        self,
+        query_embedding: list[float],
+        dataset_id: str,
+        top_k: int = 8,
+        score_threshold: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        """Course-scoped search: ignore the caller's enrollments, scope by ``dataset_id``.
+
+        Used by admin-side flows like AI exam-question generation, where
+        the *target course* — not the *caller's enrollments* — drives
+        which materials should ground the generation. The caller's
+        authorization is enforced at the endpoint layer (admin must own
+        the course / be super_admin) before we get here.
+
+        Visibility includes ``course`` docs in this dataset plus
+        institutional ``baseline`` docs (which apply system-wide and
+        teachers may legitimately want to draw from). ``private`` docs
+        are excluded — those belong to individual users, not courses.
+
+        ``score_threshold`` defaults are looser than chat retrieval
+        because exam authoring tolerates marginally-related context;
+        the LLM filters quality further.
+        """
+        query_sql = sa_text("""
+            SELECT
+                ds.id,
+                ds.content,
+                ds.metadata,
+                ds.document_id,
+                ds.page_num,
+                ds.section,
+                1 - (ds.embedding <=> :query_embedding) AS score
+            FROM document_segments ds
+            JOIN documents d ON d.id = ds.document_id
+            WHERE ds.embedding IS NOT NULL
+              AND d.deleted_at IS NULL
+              AND 1 - (ds.embedding <=> :query_embedding) >= :score_threshold
+              AND (
+                  d.uploader_role = 'baseline'
+                  OR (d.uploader_role = 'course' AND ds.dataset_id = :dataset_id)
+              )
+            ORDER BY ds.embedding <=> :query_embedding
+            LIMIT :top_k
+        """)
+
+        session: Session = self._session_factory()
+        try:
+            embedding_str = str(query_embedding)
+            rows = session.execute(
+                query_sql,
+                {
+                    "query_embedding": embedding_str,
+                    "dataset_id": str(dataset_id),
+                    "score_threshold": score_threshold,
+                    "top_k": top_k,
+                },
+            ).fetchall()
+
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                results.append(
+                    {
+                        "content": row.content,
+                        "metadata": row.metadata or {},
+                        "score": float(row.score),
+                        "document_id": str(row.document_id),
+                        "page_num": row.page_num,
+                        "section": row.section,
+                    }
+                )
+            return results
+        finally:
+            session.close()
+
     def delete_by_document(self, document_id: str) -> int:
         """Delete all segments belonging to a document. Returns the count deleted."""
         session: Session = self._session_factory()
