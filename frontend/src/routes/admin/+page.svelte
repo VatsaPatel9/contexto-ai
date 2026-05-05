@@ -95,7 +95,7 @@
     // Exclude the currently logged-in admin from their own user picker —
     // self-management belongs on the profile page, not here.
     const all = allUserIds().filter((id) => id !== currentUserId);
-    if (!searchQuery.trim()) return all.slice(0, 8);
+    if (!searchQuery.trim()) return all;
     const q = searchQuery.toLowerCase();
     return all.filter((id) => {
       if (id.toLowerCase().includes(q)) return true;
