@@ -91,6 +91,24 @@
   let grantReason = $state('');
   let granting = $state(false);
 
+  // Eligible students for the grant dropdown: enrolled but without an
+  // active grant. Submitted students float to the top because they're
+  // the typical retake target ("they failed it, let me give them
+  // another shot"). Falls back to [] until the gradebook loads.
+  let grantCandidates = $derived.by(() => {
+    if (!gradebook) return [];
+    const order: Record<string, number> = {
+      submitted: 0,
+      in_progress: 1,
+      missed: 2,
+      not_started: 3,
+    };
+    return gradebook.rows
+      .filter((r) => r.active_grants === 0)
+      .slice()
+      .sort((a, b) => (order[a.status] ?? 99) - (order[b.status] ?? 99));
+  });
+
   // Attempt drill-down drawer (right side)
   let attemptDetail = $state<AttemptDetailAdmin | null>(null);
   let attemptLoading = $state(false);
@@ -705,6 +723,9 @@
           <h2 class="text-base font-semibold text-gray-900 dark:text-white truncate">
             {attemptDetail.display_name || attemptDetail.email || attemptDetail.user_id}
           </h2>
+          {#if attemptDetail.display_name && attemptDetail.email}
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate">{attemptDetail.email}</p>
+          {/if}
           <p class="text-[11px] text-gray-500 dark:text-gray-400">
             {attemptDetail.submitted_at
               ? `Submitted ${new Date(attemptDetail.submitted_at).toLocaleString()}`
@@ -1352,24 +1373,35 @@
             Grant retake
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
-            <input type="text" bind:value={grantIdentifier}
-                   placeholder="Student email or display name"
-                   class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
-                          bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
-                          focus:ring-1 focus:ring-blue-500 transition" />
+            <select bind:value={grantIdentifier} disabled={!gradebook || grantCandidates.length === 0}
+                    class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
+                           bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
+                           focus:ring-1 focus:ring-blue-500 transition disabled:opacity-50">
+              <option value="">
+                {#if !gradebook}Loading…
+                {:else if grantCandidates.length === 0}No students eligible
+                {:else}Pick a student…{/if}
+              </option>
+              {#each grantCandidates as r (r.user_id)}
+                <option value={r.user_id}>
+                  {r.display_name || r.email || r.user_id}{r.display_name && r.email ? ` — ${r.email}` : ''} · {r.status.replace('_', ' ')}
+                </option>
+              {/each}
+            </select>
             <input type="text" bind:value={grantReason}
                    placeholder="Reason (optional, audit log)"
                    class="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg
                           bg-white dark:bg-gray-850 text-gray-900 dark:text-white outline-none
                           focus:ring-1 focus:ring-blue-500 transition" />
-            <button onclick={handleGrantRetake} disabled={granting}
+            <button onclick={handleGrantRetake} disabled={granting || !grantIdentifier}
                     class="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition
                            font-medium disabled:opacity-50 whitespace-nowrap">
               {granting ? 'Granting…' : 'Grant'}
             </button>
           </div>
           <p class="text-[11px] text-gray-400 mt-2">
-            One unconsumed grant per student. The new attempt's score replaces the previous one.
+            One unconsumed grant per student. Students with an active grant are filtered out — revoke the
+            existing grant below to re-issue. The new attempt's score replaces the previous one.
           </p>
 
           {#if grants.filter((g) => !g.consumed).length}
@@ -1383,6 +1415,9 @@
                     <p class="text-sm text-gray-900 dark:text-white truncate font-medium">
                       {g.display_name || g.email || g.user_id}
                     </p>
+                    {#if g.display_name && g.email}
+                      <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate">{g.email}</p>
+                    {/if}
                     <p class="text-[10px] text-gray-400">
                       {new Date(g.granted_at).toLocaleString()}{g.reason ? ` — ${g.reason}` : ''}
                     </p>
@@ -1420,55 +1455,15 @@
           {:else if !gradebook || gradebook.rows.length === 0}
             <p class="text-xs text-gray-400 py-8 text-center">No students enrolled yet.</p>
           {:else}
-            <div class="space-y-1.5">
-              {#each gradebook.rows as r (r.user_id)}
-                <button onclick={() => r.attempt_id && openAttempt(r.attempt_id)}
-                        disabled={!r.attempt_id}
-                        class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition
-                               {r.attempt_id ? 'hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer' : 'cursor-default opacity-70'}
-                               bg-white dark:bg-gray-850 border border-gray-100 dark:border-gray-800">
-                  <div class="shrink-0 size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
-                              flex items-center justify-center text-white text-[11px] font-bold uppercase">
-                    {(r.display_name || r.email || '??').slice(0, 2).toUpperCase()}
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-gray-900 dark:text-white truncate font-medium">
-                      {r.display_name || r.email || r.user_id}
-                    </p>
-                    <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                      <span class="px-1.5 py-0 rounded text-[9px] font-medium {gradebookStatusBadge(r.status)}">
-                        {r.status.replace('_', ' ')}
-                      </span>
-                      {#if r.attempt_count > 1}
-                        <span class="text-[10px] text-gray-400">{r.attempt_count} attempts</span>
-                      {/if}
-                      {#if r.active_grants > 0}
-                        <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                          retake granted
-                        </span>
-                      {/if}
-                      {#if r.manual_override}
-                        <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                          override
-                        </span>
-                      {/if}
-                    </div>
-                  </div>
-                  <div class="text-right shrink-0">
-                    {#if r.score_pct !== null}
-                      <div class="text-sm font-semibold text-gray-900 dark:text-white">
-                        {Math.round(r.score_pct)}%
-                      </div>
-                      <div class="text-[10px] text-gray-400">
-                        {r.score_raw?.toFixed(1) ?? '-'} / {r.total_points ?? '-'}
-                      </div>
-                    {:else}
-                      <div class="text-[10px] text-gray-400">—</div>
-                    {/if}
-                  </div>
-                </button>
-              {/each}
-            </div>
+            {@const submittedRows = gradebook.rows.filter((r) => r.status === 'submitted')}
+            {@const inProgressRows = gradebook.rows.filter((r) => r.status === 'in_progress')}
+            {@const missedRows = gradebook.rows.filter((r) => r.status === 'missed')}
+            {@const notStartedRows = gradebook.rows.filter((r) => r.status === 'not_started')}
+
+            {@render gradebookSection('In progress', inProgressRows)}
+            {@render gradebookSection('Submitted', submittedRows)}
+            {@render gradebookSection('Missed', missedRows)}
+            {@render gradebookSection('Not started', notStartedRows)}
           {/if}
         </div>
       {/if}
@@ -1476,3 +1471,69 @@
     </div>
   </div>
 </div>
+
+{#snippet gradebookRow(r: GradebookRow)}
+  <button onclick={() => r.attempt_id && openAttempt(r.attempt_id)}
+          disabled={!r.attempt_id}
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition
+                 {r.attempt_id ? 'hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer' : 'cursor-default opacity-70'}
+                 bg-white dark:bg-gray-850 border border-gray-100 dark:border-gray-800">
+    <div class="shrink-0 size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600
+                flex items-center justify-center text-white text-[11px] font-bold uppercase">
+      {(r.display_name || r.email || '??').slice(0, 2).toUpperCase()}
+    </div>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm text-gray-900 dark:text-white truncate font-medium">
+        {r.display_name || r.email || r.user_id}
+      </p>
+      <!-- Always surface email below the display name when both exist
+           so admins can disambiguate same-named students. -->
+      {#if r.display_name && r.email}
+        <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate">{r.email}</p>
+      {/if}
+      <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+        <span class="px-1.5 py-0 rounded text-[9px] font-medium {gradebookStatusBadge(r.status)}">
+          {r.status.replace('_', ' ')}
+        </span>
+        {#if r.attempt_count > 1}
+          <span class="text-[10px] text-gray-400">{r.attempt_count} attempts</span>
+        {/if}
+        {#if r.active_grants > 0}
+          <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+            retake granted
+          </span>
+        {/if}
+        {#if r.manual_override}
+          <span class="px-1.5 py-0 rounded text-[9px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+            override
+          </span>
+        {/if}
+      </div>
+    </div>
+    <div class="text-right shrink-0">
+      {#if r.score_pct !== null}
+        <div class="text-sm font-semibold text-gray-900 dark:text-white">
+          {Math.round(r.score_pct)}%
+        </div>
+        <div class="text-[10px] text-gray-400">
+          {r.score_raw?.toFixed(1) ?? '-'} / {r.total_points ?? '-'}
+        </div>
+      {:else}
+        <div class="text-[10px] text-gray-400">—</div>
+      {/if}
+    </div>
+  </button>
+{/snippet}
+
+{#snippet gradebookSection(label: string, rows: GradebookRow[])}
+  {#if rows.length}
+    <div class="text-[10px] uppercase tracking-wider text-gray-400 mt-3 mb-1.5 first:mt-0">
+      {label} · {rows.length}
+    </div>
+    <div class="space-y-1.5">
+      {#each rows as r (r.user_id)}
+        {@render gradebookRow(r)}
+      {/each}
+    </div>
+  {/if}
+{/snippet}
