@@ -30,10 +30,17 @@
     return () => window.removeEventListener('resize', checkMobile);
   });
 
-  // Public pages that don't require auth
+  // Pages that don't require an authenticated session. The /auth/*
+  // pages are listed here too: signup creates a session but /api/me
+  // 403s until the email is verified, so refreshAuthState() flips
+  // ``authenticated`` to false. Without these the user gets bounced
+  // to /login the moment we try to send them to the check-inbox or
+  // verify-link page.
   const publicPaths = [
     '/',
     '/login',
+    '/auth/check-email',
+    '/auth/verify-email',
     '/auth/forgot-password',
     '/auth/reset-password',
     '/terms',

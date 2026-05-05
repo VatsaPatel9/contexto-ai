@@ -84,13 +84,19 @@
       // so the user sees a real "check your inbox" page, not a broken
       // chat UI. /auth/verify-email is reserved for the link-click
       // landing page that consumes the token.
+      //
+      // ?sent=1 only on the signup path: the backend's sign_up_post
+      // override fires the verification email as part of /signup, so
+      // it's accurate to start the Resend cooldown. On sign-in we
+      // didn't send anything new — drop the flag so the Resend button
+      // is enabled immediately.
       const verified = await isEmailVerified();
       if (verified) {
         goto('/');
-      } else {
-        // ?sent=1 tells the check-email page "email already went out,
-        // start the Resend cooldown".
+      } else if (mode === 'register') {
         goto('/auth/check-email?sent=1');
+      } else {
+        goto('/auth/check-email');
       }
     } catch (e: any) {
       error = e.message || 'Authentication failed';
