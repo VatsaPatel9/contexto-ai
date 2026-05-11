@@ -30,11 +30,11 @@ class Settings(BaseSettings):
     auth_api_domain: str = "http://localhost"
     auth_website_domain: str = "http://localhost"
 
-    # Email-domain gate on signup. Default keeps the current PSU-only
-    # behavior; flipping RESTRICT_EMAIL_DOMAIN=false opens signup to
-    # any email. ALLOWED_EMAIL_DOMAIN swaps the permitted domain.
+    # Email-domain gate on signup. RESTRICT_EMAIL_DOMAIN=false opens
+    # signup to any email. ALLOWED_EMAIL_DOMAIN is a comma-separated
+    # list of permitted domains — e.g. "psu.edu,sainttheresaschool.org".
     restrict_email_domain: bool = True
-    allowed_email_domain: str = "psu.edu"
+    allowed_email_domain: str = "psu.edu,sainttheresaschool.org"
 
     # SMTP for transactional email (verification links, password resets).
     # Recommended: Gmail with an App Password — see README / setup notes.

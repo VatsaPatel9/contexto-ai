@@ -146,7 +146,7 @@
 
       <div>
         <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Email <span class="text-[10px] text-gray-400 font-normal">(@psu.edu only)</span>
+          Email <span class="text-[10px] text-gray-400 font-normal">(school email only)</span>
         </label>
         <input
           id="email"

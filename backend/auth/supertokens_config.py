@@ -270,15 +270,23 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
             )
 
         # Email-domain gate. Controlled by RESTRICT_EMAIL_DOMAIN env var
-        # (default True). When enabled, only ALLOWED_EMAIL_DOMAIN passes.
+        # (default True). ALLOWED_EMAIL_DOMAIN is a comma-separated list
+        # of permitted domains — e.g. "psu.edu,sainttheresaschool.org".
         if settings.restrict_email_domain:
-            allowed = settings.allowed_email_domain.strip().lstrip("@").lower()
-            if allowed and not email.endswith(f"@{allowed}"):
+            allowed_domains = [
+                d.strip().lstrip("@").lower()
+                for d in settings.allowed_email_domain.split(",")
+                if d.strip()
+            ]
+            if allowed_domains and not any(
+                email.endswith(f"@{d}") for d in allowed_domains
+            ):
                 from supertokens_python.recipe.emailpassword.interfaces import (
                     SignUpPostNotAllowedResponse,
                 )
+                pretty = ", ".join(f"@{d}" for d in allowed_domains)
                 return SignUpPostNotAllowedResponse(
-                    reason=f"Only @{allowed} email addresses are allowed."
+                    reason=f"Only {pretty} email addresses are allowed."
                 )
 
         result = await original_sign_up_post(
