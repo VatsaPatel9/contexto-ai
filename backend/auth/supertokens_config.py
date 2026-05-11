@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from supertokens_python import InputAppInfo, SupertokensConfig, init
 from supertokens_python.ingredients.emaildelivery.types import (
     EmailDeliveryConfig,
@@ -30,6 +32,8 @@ from supertokens_python.recipe.emailverification.emaildelivery.services.smtp imp
 from supertokens_python.types import GeneralErrorResponse
 
 from backend.config import Settings
+
+logger = logging.getLogger(__name__)
 
 RESEND_WINDOW_HOURS = 24
 RESEND_MAX_ATTEMPTS = 3
@@ -88,6 +92,18 @@ def _override_emailverification_apis(original):
         return result
 
     async def generate_email_verify_token_post(session, api_options, user_context):
+        """Split into three DB-touching phases so we don't hold a pool
+        connection across the SuperTokens Core round-trip (~100-500 ms).
+
+        Phase 1: rate-limit lookup (~ms, then close)
+        Phase 2: Core call (no DB held)
+        Phase 3: record successful attempt (~ms, then close)
+
+        The rate-limit race window between Phase 1 and Phase 3 is the same
+        size as it was before (the previous version also did the Core
+        round-trip with the DB connection open but never re-checked the
+        count after it returned), so behavior is preserved.
+        """
         from datetime import datetime, timedelta, timezone
         from backend.database import SessionLocal
         from backend.models.email_verification_attempt import EmailVerificationAttempt
@@ -95,6 +111,7 @@ def _override_emailverification_apis(original):
         user_id = session.get_user_id()
         window_start = datetime.now(timezone.utc) - timedelta(hours=RESEND_WINDOW_HOURS)
 
+        # Phase 1: rate-limit check.
         db = SessionLocal()
         try:
             recent = (
@@ -113,16 +130,23 @@ def _override_emailverification_apis(original):
                         "Please wait before requesting another."
                     )
                 )
-
-            result = await original_generate_token_post(session, api_options, user_context)
-
-            if getattr(result, "status", None) == "OK":
-                db.add(EmailVerificationAttempt(user_id=user_id))
-                db.commit()
-
-            return result
         finally:
             db.close()
+
+        # Phase 2: Core call. No DB connection held — frees the slot for
+        # other requests waiting on the pool.
+        result = await original_generate_token_post(session, api_options, user_context)
+
+        # Phase 3: record the attempt only if the Core call succeeded.
+        if getattr(result, "status", None) == "OK":
+            db = SessionLocal()
+            try:
+                db.add(EmailVerificationAttempt(user_id=user_id))
+                db.commit()
+            finally:
+                db.close()
+
+        return result
 
     original.email_verify_post = email_verify_post
     original.generate_email_verify_token_post = generate_email_verify_token_post
@@ -157,19 +181,17 @@ def _is_exempt_domain(settings: Settings, email: str) -> bool:
     return bool(domain) and domain in exempt
 
 
-async def _force_verify_and_refresh(tenant_id, recipe_user_id, email, session) -> None:
-    """Mark `email` verified in the SuperTokens Core, then refresh
-    `session`'s EmailVerificationClaim.
+async def _force_verify_only(tenant_id, recipe_user_id, email) -> None:
+    """Mark `email` verified in the SuperTokens Core. Idempotent —
+    returns immediately if the user is already verified.
 
-    SuperTokens has no direct ``set verified = true`` API — the
-    supported pattern is create-then-consume a token in one
-    round-trip (the admin "Mark verified" endpoint does the same).
-    The claim refresh is required because the access token was just
-    minted with st-ev=false, and the validator's
-    ``refetch_time_on_false`` grace window would otherwise 403 the
-    user's first /api/me request.
+    SuperTokens has no direct ``set verified = true`` API; the supported
+    pattern is create-then-consume a token in one server-side round-trip
+    (the admin "Mark verified" endpoint does the same).
 
-    Idempotent: a second call on an already-verified user no-ops.
+    This helper does NOT touch the caller's session. Use it on sign-in
+    paths where the session was minted at the same moment as the verify
+    state and its st-ev claim is already correct.
     """
     from supertokens_python.recipe.emailverification.asyncio import (
         create_email_verification_token,
@@ -180,18 +202,37 @@ async def _force_verify_and_refresh(tenant_id, recipe_user_id, email, session) -
         CreateEmailVerificationTokenOkResult,
     )
 
-    if not await is_email_verified(recipe_user_id, email):
-        tok = await create_email_verification_token(
-            tenant_id, recipe_user_id, email
-        )
-        if isinstance(tok, CreateEmailVerificationTokenOkResult):
-            await verify_email_using_token(tenant_id, tok.token)
+    if await is_email_verified(recipe_user_id, email):
+        return
 
-    if session is not None:
-        from supertokens_python.recipe.emailverification import (
-            EmailVerificationClaim,
-        )
-        await session.fetch_and_set_claim(EmailVerificationClaim)
+    tok = await create_email_verification_token(tenant_id, recipe_user_id, email)
+    if isinstance(tok, CreateEmailVerificationTokenOkResult):
+        await verify_email_using_token(tenant_id, tok.token)
+
+
+async def _refresh_session_verified_claim(session) -> None:
+    """Pull the current verified state from Core into `session`'s
+    access-token payload.
+
+    Only needed on sign-up: the session is minted with st-ev=false
+    (the user wasn't verified at session-creation time), and we then
+    flip the Core state to verified afterwards. Without this refresh,
+    the access token would keep st-ev=false until the claim's
+    refetch TTL elapsed and the user's first /api/me would 403.
+
+    Do NOT call this on sign-in — the SuperTokens SDK stamps the
+    correct st-ev value into the access token via the EmailVerification
+    recipe's session-lifecycle hook when the session is created, so an
+    extra round-trip to Core's regenerate_access_token endpoint is
+    redundant and (empirically) the trigger for 502s on the success
+    path of exempt-domain sign-ins.
+    """
+    if session is None:
+        return
+    from supertokens_python.recipe.emailverification import (
+        EmailVerificationClaim,
+    )
+    await session.fetch_and_set_claim(EmailVerificationClaim)
 
 
 def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPIInterface):
@@ -248,43 +289,54 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
                 # fall through and let SuperTokens handle it.
                 user_id = None
 
-        if user_id is not None:
-            window_start = datetime.now(timezone.utc) - timedelta(hours=RESEND_WINDOW_HOURS)
+        if user_id is None:
+            # Unknown email → let the SDK return its enumeration-safe OK.
+            return await original_generate_reset_token_post(
+                form_fields, tenant_id, api_options, user_context
+            )
+
+        # Three-phase to keep the DB connection out of the SuperTokens
+        # Core round-trip. See generate_email_verify_token_post for the
+        # rationale and race-window note.
+        window_start = datetime.now(timezone.utc) - timedelta(hours=RESEND_WINDOW_HOURS)
+
+        # Phase 1: rate-limit check.
+        db = SessionLocal()
+        try:
+            recent = (
+                db.query(PasswordResetAttempt)
+                .filter(
+                    PasswordResetAttempt.user_id == user_id,
+                    PasswordResetAttempt.created_at >= window_start,
+                )
+                .count()
+            )
+            if recent >= RESEND_MAX_ATTEMPTS:
+                return GeneralErrorResponse(
+                    message=(
+                        f"You've requested {RESEND_MAX_ATTEMPTS} password-reset "
+                        f"emails in the last {RESEND_WINDOW_HOURS} hours. "
+                        "Please wait before requesting another."
+                    )
+                )
+        finally:
+            db.close()
+
+        # Phase 2: Core call with no DB held.
+        result = await original_generate_reset_token_post(
+            form_fields, tenant_id, api_options, user_context
+        )
+
+        # Phase 3: record the attempt only if the Core call succeeded.
+        if getattr(result, "status", None) == "OK":
             db = SessionLocal()
             try:
-                recent = (
-                    db.query(PasswordResetAttempt)
-                    .filter(
-                        PasswordResetAttempt.user_id == user_id,
-                        PasswordResetAttempt.created_at >= window_start,
-                    )
-                    .count()
-                )
-                if recent >= RESEND_MAX_ATTEMPTS:
-                    return GeneralErrorResponse(
-                        message=(
-                            f"You've requested {RESEND_MAX_ATTEMPTS} password-reset "
-                            f"emails in the last {RESEND_WINDOW_HOURS} hours. "
-                            "Please wait before requesting another."
-                        )
-                    )
-
-                result = await original_generate_reset_token_post(
-                    form_fields, tenant_id, api_options, user_context
-                )
-
-                if getattr(result, "status", None) == "OK":
-                    db.add(PasswordResetAttempt(user_id=user_id))
-                    db.commit()
-
-                return result
+                db.add(PasswordResetAttempt(user_id=user_id))
+                db.commit()
             finally:
                 db.close()
 
-        # Unknown email → let the SDK return its enumeration-safe OK.
-        return await original_generate_reset_token_post(
-            form_fields, tenant_id, api_options, user_context
-        )
+        return result
 
     async def sign_up_post(
         form_fields: list[FormField],
@@ -387,9 +439,12 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
             try:
                 recipe_user_id = result.user.login_methods[0].recipe_user_id
                 if _is_exempt_domain(settings, email):
-                    await _force_verify_and_refresh(
-                        tenant_id, recipe_user_id, email, result.session
-                    )
+                    # Exempt domain: flip the Core verify state, then
+                    # refresh the just-minted session so its st-ev
+                    # claim reflects the new state instead of the
+                    # false it was stamped with at creation time.
+                    await _force_verify_only(tenant_id, recipe_user_id, email)
+                    await _refresh_session_verified_claim(result.session)
                 else:
                     from supertokens_python.recipe.emailverification.asyncio import (
                         send_email_verification_email,
@@ -401,7 +456,16 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
                         email,
                     )
             except Exception:
-                pass
+                # The user account is created (the SDK already committed
+                # it); we don't want a Core/SMTP blip to surface as a
+                # 5xx to the client. But we DO want the trace in Railway
+                # logs so the next failure isn't invisible the way the
+                # exempt-domain 502 was. Logged with full stack frame.
+                logger.exception(
+                    "Post-signup verify/email step failed for %s (exempt=%s)",
+                    email,
+                    _is_exempt_domain(settings, email),
+                )
 
         return result
 
@@ -419,8 +483,9 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
 
         Covers the back-fill case: anyone who tried to sign up before
         their domain was added to ``VERIFICATION_EXEMPT_DOMAINS`` is
-        sitting in the DB with st-ev=false. _force_verify_and_refresh
-        is idempotent, so no harm on already-verified users either.
+        sitting in the DB with the verified flag off. _force_verify_only
+        is idempotent, so on the common case (user already verified)
+        it's a single cheap Core round-trip that returns immediately.
         """
         from supertokens_python.recipe.emailpassword.interfaces import (
             SignInPostOkResult,
@@ -442,12 +507,31 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
                     email = field.value.strip().lower()
             if _is_exempt_domain(settings, email):
                 try:
+                    # Back-fill only: if this user signed up before the
+                    # domain was added to VERIFICATION_EXEMPT_DOMAINS,
+                    # _force_verify_only flips them to verified in Core.
+                    # For users who are already verified (the common
+                    # case), it's a cheap idempotent no-op (one Core
+                    # round-trip that returns "already verified").
+                    #
+                    # We deliberately do NOT touch result.session here.
+                    # The SuperTokens SDK has already stamped the
+                    # correct st-ev value into the access token via the
+                    # EmailVerification recipe's session-lifecycle hook
+                    # at session-creation time. Calling
+                    # session.fetch_and_set_claim here triggers an
+                    # extra Core round-trip (regenerate_access_token)
+                    # that was the trigger for 502s on this path.
                     recipe_user_id = result.user.login_methods[0].recipe_user_id
-                    await _force_verify_and_refresh(
-                        tenant_id, recipe_user_id, email, result.session
-                    )
+                    await _force_verify_only(tenant_id, recipe_user_id, email)
                 except Exception:
-                    pass
+                    # Sign-in itself already succeeded; a back-fill
+                    # failure is not fatal — surface the trace so the
+                    # next failure is debuggable in Railway logs.
+                    logger.exception(
+                        "Sign-in back-fill verify failed for exempt-domain user %s",
+                        email,
+                    )
 
         return result
 
