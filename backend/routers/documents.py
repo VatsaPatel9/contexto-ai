@@ -66,10 +66,6 @@ async def upload_document(
         )
 
     user_id = session.get_user_id()
-    # Per-user rate limit on uploads — keeps a curious student from
-    # accidentally exhausting an instructor's quota by uploading the
-    # same PDF dozens of times.
-    await enforce_user_limits(user_id, "upload", UPLOAD_WINDOWS)
     roles = await get_user_roles(session)
 
     # Determine the document scope based on uploader's role.
@@ -82,6 +78,13 @@ async def upload_document(
     else:
         uploader_role = "private"
     visibility = "global" if is_admin else "private"  # legacy column, retained
+
+    # Per-user rate limit on uploads — keeps a curious student from
+    # accidentally exhausting an instructor's quota by uploading the
+    # same PDF dozens of times. Admins/super-admins are exempt: they
+    # legitimately bulk-upload course material.
+    if not is_admin:
+        await enforce_user_limits(user_id, "upload", UPLOAD_WINDOWS)
 
     # Enforce upload limit for non-admin users
     if not is_admin:
