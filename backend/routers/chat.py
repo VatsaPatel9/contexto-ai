@@ -91,7 +91,13 @@ async def chat_messages(
             retriever = None
 
     async def event_stream():
-        # Create DB session inside the stream so it lives as long as streaming does
+        # Create a DB session for the orchestrator's pre-stream phase.
+        # The orchestrator commits and closes it before the LLM stream
+        # starts (so we don't pin a pool slot for the 5-60s stream
+        # window) and opens a fresh session for the post-stream save.
+        # The finally below double-closes on the success path, which is
+        # idempotent — it remains as a safety net for the rare case
+        # where Phase 1 raises before its own close() runs.
         db = SessionLocal()
         # Track the conversation_id surfaced in the SSE payloads so we can
         # invalidate just-the-right cache pages once streaming finishes.

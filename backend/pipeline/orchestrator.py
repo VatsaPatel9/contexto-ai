@@ -371,6 +371,7 @@ async def process_chat_message(
                        "Please contact your instructor or advisor.",
             "code": "account_suspended",
         })
+        db.close()
         return
 
     # Token budget check
@@ -384,6 +385,7 @@ async def process_chat_message(
                            "Please contact your administrator.",
                 "code": "token_limit_reached",
             })
+            db.close()
             return
 
     # ------------------------------------------------------------------
@@ -429,6 +431,7 @@ async def process_chat_message(
                 "code": "account_suspended",
                 "conversation_id": conversation_id,
             })
+            db.close()
             return
 
         if offense_result.severity in ("moderate", "severe"):
@@ -448,6 +451,7 @@ async def process_chat_message(
                 "code": "offensive_language",
                 "conversation_id": conversation_id,
             })
+            db.close()
             return
 
         # Mild offense: warn the user but continue processing
@@ -493,6 +497,7 @@ async def process_chat_message(
             "code": "prompt_injection",
             "conversation_id": conversation_id,
         })
+        db.close()
         return
 
     # ------------------------------------------------------------------
@@ -527,6 +532,7 @@ async def process_chat_message(
                 "created_at": now_ts,
             })
             yield _sse({"event": "message_end", "conversation_id": conversation_id, "message_id": "", "metadata": {}})
+            db.close()
             return
 
     # ------------------------------------------------------------------
@@ -741,6 +747,7 @@ async def process_chat_message(
             "created_at": now_ts,
         })
         yield _sse({"event": "message_end", "conversation_id": conversation_id, "message_id": "", "metadata": {}})
+        db.close()
         return
 
     # ------------------------------------------------------------------
@@ -918,7 +925,14 @@ THIS IS A META QUESTION (greeting, logistics, identity, or a request to list wha
         has_attempt=has_attempt,
     )
     db.add(user_msg)
-    db.flush()
+    db.commit()
+
+    # Release the DB connection back to the pool for the duration of the
+    # LLM stream below. The stream loop touches no DB at all, but if we
+    # left this session open we'd pin one connection per active chat
+    # for the full 5-60s response window — that's what was burning the
+    # pool under load. Phase 3 reopens a fresh session for the save.
+    db.close()
 
     # ------------------------------------------------------------------
     # 11. Stream LLM response
@@ -984,44 +998,53 @@ THIS IS A META QUESTION (greeting, logistics, identity, or a request to list wha
         ]
 
     # ------------------------------------------------------------------
-    # 14. Save assistant message
+    # 14-15b. Post-stream save — fresh DB connection.
+    #
+    # Phase 1's session was closed before the LLM stream. A new session
+    # is opened here and held only for the few ms needed to insert the
+    # assistant message, bump the conversation, and update the token
+    # counters. ``profile`` is re-fetched (the Phase 1 reference is
+    # detached and stale): re-reading also means concurrent chats from
+    # the same user can't clobber each other's increments by writing
+    # back a pre-stream value.
     # ------------------------------------------------------------------
-    assistant_msg = Message(
-        id=uuid.UUID(assistant_msg_id),
-        conversation_id=conv_uuid,
-        role="assistant",
-        content=stored_response,
-        message_type=msg_type,
-        has_attempt=False,
-        retrieval_sources=retrieval_sources_json,
-    )
-    db.add(assistant_msg)
-
-    # ------------------------------------------------------------------
-    # 15. Update conversation
-    # ------------------------------------------------------------------
-    conv = db.query(Conversation).filter(Conversation.id == conv_uuid).first()
-    if conv:
-        conv.interaction_count = (conv.interaction_count or 0) + 1
-        # Progress hint level after every 2 interactions on same conversation
-        if conv.interaction_count % 2 == 0 and (conv.hint_level or 0) < 2:
-            conv.hint_level = (conv.hint_level or 0) + 1
-
-    # ------------------------------------------------------------------
-    # 15b. Track token usage
-    # ------------------------------------------------------------------
+    from backend.database import SessionLocal as _PhaseThreeSession
+    db = _PhaseThreeSession()
     try:
-        # Approximate token counts from word counts (×1.3 is standard heuristic)
-        prompt_text = " ".join(m.get("content", "") for m in prompt_messages)
-        tokens_in_approx = int(len(prompt_text.split()) * 1.3)
-        tokens_out_approx = int(len(full_response.split()) * 1.3)
+        profile = get_or_create_profile(db, user_id)
 
-        profile.tokens_in += tokens_in_approx
-        profile.tokens_out += tokens_out_approx
-    except Exception as exc:
-        logger.warning("Token tracking failed: %s", exc)
+        assistant_msg = Message(
+            id=uuid.UUID(assistant_msg_id),
+            conversation_id=conv_uuid,
+            role="assistant",
+            content=stored_response,
+            message_type=msg_type,
+            has_attempt=False,
+            retrieval_sources=retrieval_sources_json,
+        )
+        db.add(assistant_msg)
 
-    db.commit()
+        conv = db.query(Conversation).filter(Conversation.id == conv_uuid).first()
+        if conv:
+            conv.interaction_count = (conv.interaction_count or 0) + 1
+            # Progress hint level after every 2 interactions on same conversation
+            if conv.interaction_count % 2 == 0 and (conv.hint_level or 0) < 2:
+                conv.hint_level = (conv.hint_level or 0) + 1
+
+        try:
+            # Approximate token counts from word counts (×1.3 is standard heuristic)
+            prompt_text = " ".join(m.get("content", "") for m in prompt_messages)
+            tokens_in_approx = int(len(prompt_text.split()) * 1.3)
+            tokens_out_approx = int(len(full_response.split()) * 1.3)
+
+            profile.tokens_in += tokens_in_approx
+            profile.tokens_out += tokens_out_approx
+        except Exception as exc:
+            logger.warning("Token tracking failed: %s", exc)
+
+        db.commit()
+    finally:
+        db.close()
 
     # ------------------------------------------------------------------
     # 16. Yield message_end event
