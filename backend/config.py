@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # send and users will be locked out. Flip to False in dev/test.
     email_verification_required: bool = True
 
+    # Comma-separated domains whose signups are auto-verified (the
+    # verification email is never sent). Use for organisations whose
+    # mail server rejects external mail — e.g. a school whose policy
+    # blocks all non-internal correspondence — so users would never
+    # receive the link. Trusts the domain at the domain level: anyone
+    # who claims any address at a listed domain is treated as
+    # verified, so keep the list short and only include domains you
+    # control or trust completely.
+    verification_exempt_domains: str = "sainttheresaschool.org"
+
     # Cloudflare R2 object storage
     r2_account_id: str = ""
     r2_access_key_id: str = ""

@@ -144,12 +144,65 @@ def _build_smtp_settings(settings: Settings) -> SMTPSettings | None:
     )
 
 
+def _is_exempt_domain(settings: Settings, email: str) -> bool:
+    """Whether `email`'s domain is in VERIFICATION_EXEMPT_DOMAINS."""
+    if "@" not in email:
+        return False
+    domain = email.rsplit("@", 1)[-1].lower()
+    exempt = [
+        d.strip().lstrip("@").lower()
+        for d in (settings.verification_exempt_domains or "").split(",")
+        if d.strip()
+    ]
+    return bool(domain) and domain in exempt
+
+
+async def _force_verify_and_refresh(tenant_id, recipe_user_id, email, session) -> None:
+    """Mark `email` verified in the SuperTokens Core, then refresh
+    `session`'s EmailVerificationClaim.
+
+    SuperTokens has no direct ``set verified = true`` API — the
+    supported pattern is create-then-consume a token in one
+    round-trip (the admin "Mark verified" endpoint does the same).
+    The claim refresh is required because the access token was just
+    minted with st-ev=false, and the validator's
+    ``refetch_time_on_false`` grace window would otherwise 403 the
+    user's first /api/me request.
+
+    Idempotent: a second call on an already-verified user no-ops.
+    """
+    from supertokens_python.recipe.emailverification.asyncio import (
+        create_email_verification_token,
+        is_email_verified,
+        verify_email_using_token,
+    )
+    from supertokens_python.recipe.emailverification.interfaces import (
+        CreateEmailVerificationTokenOkResult,
+    )
+
+    if not await is_email_verified(recipe_user_id, email):
+        tok = await create_email_verification_token(
+            tenant_id, recipe_user_id, email
+        )
+        if isinstance(tok, CreateEmailVerificationTokenOkResult):
+            await verify_email_using_token(tenant_id, tok.token)
+
+    if session is not None:
+        from supertokens_python.recipe.emailverification import (
+            EmailVerificationClaim,
+        )
+        await session.fetch_and_set_claim(EmailVerificationClaim)
+
+
 def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPIInterface):
     """Override signup to optionally gate email domain and capture display_name,
-    and rate-limit the forgot-password endpoint the same way email verification
-    resends are rate-limited."""
+    rate-limit the forgot-password endpoint the same way email verification
+    resends are rate-limited, and on sign-in clear the unverified state for
+    accounts whose domain is in VERIFICATION_EXEMPT_DOMAINS (covers users
+    who signed up before the domain was added to the exempt list)."""
 
     original_sign_up_post = original.sign_up_post
+    original_sign_in_post = original.sign_in_post
     original_generate_reset_token_post = original.generate_password_reset_token_post
 
     async def generate_password_reset_token_post(
@@ -324,28 +377,82 @@ def _override_emailpassword_apis(settings: Settings, original: EmailPasswordAPII
             except Exception:
                 pass  # Non-fatal — user can re-confirm later from the profile flow
 
-            # Fire the verification email as part of the signup response
-            # so every /signup call ships a link — the way a professional
-            # signup API is expected to behave. Errors are swallowed so an
-            # SMTP misconfig can't block the account creation; the user can
-            # hit Resend from the /verify-email page as a fallback.
+            # Either auto-verify (exempt domain) or fire the usual
+            # verification link. Exempt domains exist for orgs whose
+            # mail server rejects our SMTP — the link would bounce
+            # and the user would be locked out forever. Errors are
+            # swallowed so SMTP/Core blips can't fail the signup; the
+            # user can hit Resend (or an admin can use Mark verified)
+            # from the /auth/check-email page.
             try:
-                from supertokens_python.recipe.emailverification.asyncio import (
-                    send_email_verification_email,
-                )
                 recipe_user_id = result.user.login_methods[0].recipe_user_id
-                await send_email_verification_email(
-                    tenant_id,
-                    result.user.id,
-                    recipe_user_id,
-                    email,
-                )
+                if _is_exempt_domain(settings, email):
+                    await _force_verify_and_refresh(
+                        tenant_id, recipe_user_id, email, result.session
+                    )
+                else:
+                    from supertokens_python.recipe.emailverification.asyncio import (
+                        send_email_verification_email,
+                    )
+                    await send_email_verification_email(
+                        tenant_id,
+                        result.user.id,
+                        recipe_user_id,
+                        email,
+                    )
             except Exception:
                 pass
 
         return result
 
+    async def sign_in_post(
+        form_fields: list[FormField],
+        tenant_id: str,
+        session=None,
+        should_try_linking_with_session_user=None,
+        api_options: EmailPasswordAPIOptions = None,
+        user_context=None,
+    ):
+        """On a successful sign-in from an exempt domain, clear any
+        lingering unverified state so the user lands straight in the
+        app instead of being shipped to /auth/check-email.
+
+        Covers the back-fill case: anyone who tried to sign up before
+        their domain was added to ``VERIFICATION_EXEMPT_DOMAINS`` is
+        sitting in the DB with st-ev=false. _force_verify_and_refresh
+        is idempotent, so no harm on already-verified users either.
+        """
+        from supertokens_python.recipe.emailpassword.interfaces import (
+            SignInPostOkResult,
+        )
+
+        result = await original_sign_in_post(
+            form_fields=form_fields,
+            tenant_id=tenant_id,
+            session=session,
+            should_try_linking_with_session_user=should_try_linking_with_session_user,
+            api_options=api_options,
+            user_context=user_context,
+        )
+
+        if isinstance(result, SignInPostOkResult):
+            email = ""
+            for field in form_fields:
+                if field.id == "email":
+                    email = field.value.strip().lower()
+            if _is_exempt_domain(settings, email):
+                try:
+                    recipe_user_id = result.user.login_methods[0].recipe_user_id
+                    await _force_verify_and_refresh(
+                        tenant_id, recipe_user_id, email, result.session
+                    )
+                except Exception:
+                    pass
+
+        return result
+
     original.sign_up_post = sign_up_post
+    original.sign_in_post = sign_in_post
     original.generate_password_reset_token_post = generate_password_reset_token_post
     return original
 
