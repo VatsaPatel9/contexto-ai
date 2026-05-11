@@ -10,7 +10,23 @@ settings = Settings()
 _db_url = settings.database_url
 if _db_url.startswith("postgresql://"):
     _db_url = _db_url.replace("postgresql://", "postgresql+psycopg://", 1)
-engine = create_engine(_db_url, pool_pre_ping=True)
+# SQLAlchemy's default pool_size=5 / max_overflow=10 = 15 concurrent
+# connections per replica. The admin page fans out one /profile request
+# per user via Promise.all, which burns the pool the moment any list >
+# ~15 admins/students is in the system, and then every concurrent
+# /api/me or /auth/signin queues behind it until Cloudflare 524s.
+#
+# pool_timeout caps the wait so a starved request fails fast (5xx)
+# instead of hanging the whole platform; pool_recycle drops stale
+# sockets that managed Postgres providers tend to silently close.
+engine = create_engine(
+    _db_url,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=10,
+    pool_recycle=1800,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

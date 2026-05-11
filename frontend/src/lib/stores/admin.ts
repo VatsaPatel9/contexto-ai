@@ -28,17 +28,27 @@ export async function loadAdminUsers(force = false): Promise<void> {
     for (const id of list) allIds.add(id);
   }
 
+  // Fetch profiles with a small concurrency cap. Promise.all on every
+  // user fans out N parallel GETs which torch the backend's DB pool
+  // (one connection per /profile call) and starves /api/me, /auth/signin
+  // — eventually every user-facing request 524s until the storm clears.
+  // 4-at-a-time keeps the cache warm without DoSing ourselves.
+  const queue = [...allIds].filter((id) => !get(userNameCache)[id]);
+  const CONCURRENCY = 4;
   await Promise.all(
-    [...allIds].map(async (id) => {
-      if (get(userNameCache)[id]) return;
-      try {
-        const profile = await getUserProfile(id);
-        userNameCache.update((c) => ({
-          ...c,
-          [id]: { displayName: profile.display_name, email: profile.email },
-        }));
-      } catch {
-        // Ignore — row will fall back to "Loading…"
+    Array.from({ length: CONCURRENCY }, async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        if (!id) return;
+        try {
+          const profile = await getUserProfile(id);
+          userNameCache.update((c) => ({
+            ...c,
+            [id]: { displayName: profile.display_name, email: profile.email },
+          }));
+        } catch {
+          // Ignore — row will fall back to "Loading…"
+        }
       }
     }),
   );
